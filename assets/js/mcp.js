@@ -66,17 +66,27 @@
     {
       nome: 'create_nota', tipo: 'escrita',
       desc: 'Cria uma nota nova. A data é sempre hoje. Exige nome, tipo, ao menos um projeto e o conteúdo.',
-      filtros: 'escrita — restrita a Notas',
+      filtros: 'nome · tipo · projetos · conteúdo — todos obrigatórios',
     },
     {
       nome: 'update_nota', tipo: 'escrita',
       desc: 'Edita uma nota existente. Substituição completa, não é um patch — toda chamada reenvia nome, tipo, projetos e o conteúdo INTEIRO, mesmo o que não mudou.',
-      filtros: 'escrita — restrita a Notas',
+      filtros: 'id + todos os campos, sempre',
     },
     {
       nome: 'search_tarefas', tipo: 'leitura',
       desc: 'Busca tarefas, com o projeto ao qual cada uma pertence.',
       filtros: 'nome · projeto · status · tipo · data de entrega',
+    },
+    {
+      nome: 'create_tarefa', tipo: 'escrita',
+      desc: 'Cria uma tarefa. Toda tarefa pertence a um projeto existente; sem status, nasce como "Não Iniciado".',
+      filtros: 'nome · projeto (obrigatórios) · status · tipo · data de entrega',
+    },
+    {
+      nome: 'update_tarefa', tipo: 'escrita',
+      desc: 'Edita uma tarefa — patch parcial: só o que for enviado muda. Serve também para trocar de projeto.',
+      filtros: 'id + qualquer campo',
     },
     {
       nome: 'search_projetos', tipo: 'leitura',
@@ -89,14 +99,79 @@
       filtros: 'nome · tipo · projeto · intervalo de data',
     },
     {
+      nome: 'create_evento', tipo: 'escrita',
+      desc: 'Cria um evento no calendário. Data final e projeto são opcionais.',
+      filtros: 'nome · data · tipo (obrigatórios) · data final · projeto',
+    },
+    {
+      nome: 'update_evento', tipo: 'escrita',
+      desc: 'Edita um evento — patch parcial. Mandar data final ou projeto vazios remove o valor.',
+      filtros: 'id + qualquer campo',
+    },
+    {
       nome: 'search_manifestacoes', tipo: 'leitura',
       desc: 'Busca manifestações — os objetivos de longo prazo do sistema.',
       filtros: 'nome · status · tags',
     },
     {
+      nome: 'search_citacoes', tipo: 'leitura',
+      desc: 'Lê as citações guardadas — as que o painel sorteia no banner acima do calendário.',
+      filtros: 'texto · autor',
+    },
+    {
+      nome: 'create_citacao', tipo: 'escrita',
+      desc: 'Adiciona uma citação (texto + quem disse). Trechos entre *asteriscos* ficam em destaque no banner.',
+      filtros: 'texto · autor — só criar, sem editar',
+    },
+    {
+      nome: 'list_memorias', tipo: 'leitura',
+      desc: 'Índice da memória de longo prazo: título, categoria e descrição de cada memória, sem o conteúdo. O mesmo índice já chega à IA ao conectar.',
+      filtros: 'categoria',
+    },
+    {
+      nome: 'get_memoria', tipo: 'leitura',
+      desc: 'Abre uma ou mais memórias e devolve todos os registros, datados e com a origem de cada um.',
+      filtros: 'títulos ou ids',
+    },
+    {
+      nome: 'create_memoria', tipo: 'escrita',
+      desc: 'Cria uma memória nova — um tema. Título único; se o tema já existe, a IA é orientada a usar add_registro.',
+      filtros: 'título · descrição · categoria (obrigatórios) · registros iniciais · origem',
+    },
+    {
+      nome: 'add_registro', tipo: 'escrita',
+      desc: 'Acrescenta um fato datado a uma memória existente. É como a memória cresce.',
+      filtros: 'memória · texto (obrigatórios) · origem',
+    },
+    {
+      nome: 'update_memoria', tipo: 'escrita',
+      desc: 'Edita título, descrição ou categoria de uma memória — patch parcial; os registros não mudam.',
+      filtros: 'memória + qualquer campo',
+    },
+    {
+      nome: 'update_registro', tipo: 'escrita',
+      desc: 'Corrige um registro que ficou errado. Substitui o texto inteiro; a data original se mantém.',
+      filtros: 'id · texto — sempre o texto completo',
+    },
+    {
+      nome: 'resumo_financeiro', tipo: 'leitura',
+      desc: 'O mês já agregado com as mesmas regras da tela de Finanças: saldo com abertura, crédito fora do caixa, fatura que fecha (pago, restante, adiantamento), recorrências. Por cima disso, consumo real do mês, rateios, compromissos fixos (do cadastro de Recorrências previstas, ou adivinhados pelo histórico), gastos fora da curva, ritmo do mês e quanto sobra por dia nos dois meses seguintes, em faixa quando o cadastro tem faixa. Com um intervalo, compara até 12 meses, nome a nome.',
+      filtros: 'mês · ou de/até · incluir movimentações (até 3 meses)',
+    },
+    {
       nome: 'search_movimentacoes', tipo: 'leitura',
-      desc: 'Busca movimentações financeiras, para a IA somar e comparar períodos.',
+      desc: 'Busca as movimentações em si, para descer ao detalhe. Com início e fim de data, um mês inteiro cabe numa chamada.',
       filtros: 'nome · direção · meio · data · faixa de valor',
+    },
+    {
+      nome: 'create_movimentacao', tipo: 'escrita',
+      desc: 'Lança uma movimentação financeira nova.',
+      filtros: 'nome · valor · data · direção (obrigatórios) · meio',
+    },
+    {
+      nome: 'update_movimentacao', tipo: 'escrita',
+      desc: 'Edita uma movimentação — patch parcial. Direção e meio mudam de forma independente.',
+      filtros: 'id + qualquer campo',
     },
   ];
 

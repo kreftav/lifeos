@@ -39,6 +39,7 @@
   var MANIFESTACOES_FN = FN_BASE + 'lifeos-manifestacoes';
   var NOTAS_FN = FN_BASE + 'lifeos-notas';
   var VIEWS_FN = FN_BASE + 'lifeos-views';
+  var CITACOES_FN = FN_BASE + 'lifeos-citacoes';
   var ANON_KEY = CFG.anonKey;
   var LS_KEY = CFG.sessionKey; /* mesma chave de /financas e /eventos — "lembrar" vale nas três */
 
@@ -193,6 +194,11 @@
   var MANIF_FOCUS = false;    /* modo foco do atalho rápido — ver toggleManifFocus */
   var MANIFESTACAO_TAGS_SEL = [];   /* estado do chip-picker multi-select de tags */
   var MANIFESTACAO_BANNER_FILE = null; /* File escolhido no input, null = sem banner */
+  /* Citações (set/2026) — nativo do hub: banner sorteado acima do
+     Calendário + #citacoes-modal com a lista e o CRUD. Ver LIFEOS.md §3.6. */
+  var CITACOES = [];
+  var CITACAO_ATUAL_ID = null;  /* a sorteada no banner; mantida entre renders até o próximo sorteio */
+  var EDIT_CITACAO_ID = null;   /* null = formulário em modo criar */
   var FIN_MONTH_CACHE = {};   /* ym -> movimentacoes, memoização pra carryInto (ver ensureFinMonthRows) */
   var finChart = null;
   var NOT_TIPO_CHART = null;  /* barras · distribuição de Notas por tipo (#not-chart-tipo) */
@@ -287,6 +293,8 @@
   var TAREFA_DESCRICAO_MODE = 'Editar';
   var CURRENT_DETAIL_TAREFA_ID = null; /* tarefa aberta no detail-modal — alimenta Editar/Excluir */
   var CURRENT_DETAIL_NOTA_ID = null;   /* nota aberta no detail-modal — alimenta o botão "Tela cheia" */
+  var CURRENT_DETAIL_EVENTO_ID = null; /* evento aberto no detail-modal — alimenta Editar/Excluir (mesmo rodapé da tarefa) */
+  var EDIT_EVENTO_ID = null;           /* null = #evento-modal em modo "criar" */
   /* CRUD de Projetos direto pelo hub — movido de tarefas.js em set/2026 (ver
      LIFEOS.md, decisão explícita do autor de centralizar a gestão aqui). */
   var EDIT_PROJETO_ID = null;       /* null = #projeto-modal em modo "criar" */
@@ -314,7 +322,7 @@
      que cruza a linha é partido em duas entradas sintéticas. Cópia exata
      de financas.js (ver comentário lá pro porquê de cada detalhe). */
   function splitPagamentosFatura(pagamentos, totalFatura) {
-    var sorted = pagamentos.slice().sort(function (a, b) { return (a.date || '').localeCompare(b.date || ''); });
+    var sorted = pagamentos.slice().sort(function (a, b) { return (a.date || '').localeCompare(b.date || '') || (a.created_at || '').localeCompare(b.created_at || ''); });
     var atual = [], adiantamento = [], cumC = 0;
     var totalC = Math.round(totalFatura * 100);
     sorted.forEach(function (m) {
@@ -522,6 +530,13 @@
     MOCK_EVENTOS.push(created);
     return { ok: true, evento: created };
   }
+  function mockEventosUpdate(id, patch) {
+    if (!MOCK_EVENTOS) MOCK_EVENTOS = seedMockEventos();
+    for (var i = 0; i < MOCK_EVENTOS.length; i++) {
+      if (MOCK_EVENTOS[i].id === id) { MOCK_EVENTOS[i] = Object.assign({}, MOCK_EVENTOS[i], patch); return { ok: true, evento: MOCK_EVENTOS[i] }; }
+    }
+    return { ok: false, error: 'not_found' };
+  }
   function mockEventosDelete(id) {
     if (MOCK_EVENTOS) { for (var i = 0; i < MOCK_EVENTOS.length; i++) { if (MOCK_EVENTOS[i].id === id) { MOCK_EVENTOS.splice(i, 1); break; } } }
     return { ok: true, id: id };
@@ -596,6 +611,38 @@
     var created = Object.assign({ id: 'mock-manif-new-' + Date.now(), banner_url: bannerUrl, descricao: null }, m);
     MOCK_MANIFESTACOES.push(created);
     return { ok: true, manifestacao: created };
+  }
+  /* Citações — mock local do CRUD inteiro (ver LIFEOS.md §3.6). */
+  var MOCK_CITACOES = null;
+  function mockCitacoesAll() {
+    if (!MOCK_CITACOES) {
+      MOCK_CITACOES = [
+        { id: 'mock-cit-1', texto: 'Para ser feliz, elimine *duas coisas*. O *medo* de um futuro ruim e a *memória* de um passado ruim.', autor: 'Sêneca' },
+        { id: 'mock-cit-2', texto: 'Não é porque as coisas são difíceis que não ousamos; é porque *não ousamos* que elas são difíceis.', autor: 'Sêneca' },
+        { id: 'mock-cit-3', texto: 'Aquele que tem um *porquê* para viver pode suportar quase qualquer *como*.', autor: 'Nietzsche' },
+      ];
+    }
+    return MOCK_CITACOES;
+  }
+  function mockCitacoes(body) {
+    var all = mockCitacoesAll();
+    var i;
+    if (body.action === 'create') {
+      var created = { id: 'mock-cit-new-' + Date.now(), texto: body.citacao.texto, autor: body.citacao.autor };
+      all.push(created);
+      return { ok: true, citacao: created };
+    }
+    if (body.action === 'update') {
+      for (i = 0; i < all.length; i++) {
+        if (all[i].id === body.id) { all[i] = Object.assign({}, all[i], body.patch); return { ok: true, citacao: all[i] }; }
+      }
+      return { ok: false, error: 'not_found' };
+    }
+    if (body.action === 'delete') {
+      for (i = 0; i < all.length; i++) { if (all[i].id === body.id) { all.splice(i, 1); break; } }
+      return { ok: true, id: body.id };
+    }
+    return { ok: true, citacoes: all.slice() };
   }
   var MOCK_NOTAS = null;
   function mockNotasQuery() {
@@ -713,6 +760,21 @@
       method: 'POST',
       headers: { 'apikey': ANON_KEY, 'Authorization': 'Bearer ' + ANON_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: pw, action: 'create', evento: evento }),
+    }).then(function (res) {
+      if (res.status === 401) return Promise.reject({ code: 'unauthorized' });
+      if (!res.ok) return Promise.reject({ code: 'server', detail: String(res.status) });
+      return res.json();
+    }).then(function (j) {
+      if (!j || !j.ok) return Promise.reject({ code: 'server', detail: (j && j.error) || 'resposta inválida' });
+      return j;
+    });
+  }
+  function apiEventosUpdate(pw, id, patch) {
+    if (IS_LOCAL_DEV) return mockDelay(mockEventosUpdate(id, patch));
+    return fetch(EVENTOS_FN, {
+      method: 'POST',
+      headers: { 'apikey': ANON_KEY, 'Authorization': 'Bearer ' + ANON_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: pw, action: 'update', id: id, patch: patch }),
     }).then(function (res) {
       if (res.status === 401) return Promise.reject({ code: 'unauthorized' });
       if (!res.ok) return Promise.reject({ code: 'server', detail: String(res.status) });
@@ -872,6 +934,28 @@
     }).then(function (j) {
       if (!j || !j.ok) return Promise.reject({ code: 'server', detail: (j && j.error) || 'resposta inválida' });
       return j;
+    });
+  }
+  /* Citações — as quatro ações (query/create/update/delete) passam pelo
+     mesmo corpo `{token, action, ...}`, então um só helper serve todas. */
+  function apiCitacoes(pw, body) {
+    body = Object.assign({ token: pw }, body || {});
+    if (IS_LOCAL_DEV) {
+      var mocked = mockCitacoes(body);
+      return mockDelay(mocked).then(function (j) {
+        return j.ok ? j : Promise.reject({ code: 'server', detail: j.error });
+      });
+    }
+    return fetch(CITACOES_FN, {
+      method: 'POST',
+      headers: { 'apikey': ANON_KEY, 'Authorization': 'Bearer ' + ANON_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function (res) {
+      if (res.status === 401) return Promise.reject({ code: 'unauthorized' });
+      return res.json().catch(function () { return null; }).then(function (j) {
+        if (!res.ok || !j || !j.ok) return Promise.reject({ code: 'server', detail: (j && j.error) || String(res.status) });
+        return j;
+      });
     });
   }
   /* CREATE de Manifestações — banner_base64/banner_content_type são
@@ -1355,8 +1439,8 @@
 
   /* ── Preview de Eventos: mini-calendário NAVEGÁVEL (ver §1 do LIFEOS.md —
      revertido: o autor quer poder navegar meses direto do hub, não só em
-     /eventos) + linha do tempo recentes/próximos. Criar/excluir eventos
-     continuam vivendo só em /eventos — o hub segue read-only. ── */
+     /eventos) + linha do tempo recentes/próximos. O CRUD de eventos mora
+     todo aqui no hub (§3.4) — /eventos está dormente. ── */
   function renderMiniCal() {
     var dowHost = $('mini-cal-dow'), gridHost = $('mini-cal'), labelEl = $('hub-cal-label');
     if (!gridHost) return;
@@ -1475,8 +1559,8 @@
   }
 
   /* ── Modal · detalhes do dia (clique numa célula do mini-calendário) ──
-     Modo eventos: dá pra ver E excluir (criar é pelo botão "Adicionar", ver
-     openEventoModal) — o calendário é o único lugar do LifeOS pra CRUD de
+     Modo eventos: dá pra ver, editar E excluir (criar é pelo botão
+     "Adicionar", ver openEventoModal) — o calendário é o único lugar do LifeOS pra CRUD de
      eventos. Modo tarefas: só LEITURA — tarefas exigem projeto obrigatório
      e o CRUD completo mora em tarefas.html, não faz sentido duplicar aqui
      (ver LIFEOS.md §1). Funciona pra qualquer dia do mês já carregado (em
@@ -1516,7 +1600,8 @@
       $('tarefa-modal').classList.contains('open') ||
       $('projeto-modal').classList.contains('open') ||
       $('projeto-detail-modal').classList.contains('open') ||
-      $('manifestacao-modal').classList.contains('open');
+      $('manifestacao-modal').classList.contains('open') ||
+      $('citacoes-modal').classList.contains('open');
     if (open) {
       if (document.body.classList.contains('modal-scroll-lock')) return;
       SCROLL_LOCK_Y = window.scrollY;
@@ -1539,10 +1624,15 @@
     var actions = $('detail-modal-actions');
     var dateBadge = $('detail-banner-date'); dateBadge.hidden = true;
     if (kind === 'evento') {
-      actions.hidden = true;
+      /* Editar/Excluir no mesmo rodapé da tarefa (set/2026) — o dispatcher
+         dos botões decide pelo id preenchido (CURRENT_DETAIL_EVENTO_ID vs
+         CURRENT_DETAIL_TAREFA_ID, nunca os dois ao mesmo tempo). */
+      actions.hidden = false;
+      $('detail-modal-edit').setAttribute('aria-label', 'Editar evento');
+      $('detail-modal-delete').setAttribute('aria-label', 'Excluir evento');
       $('detail-modal-fullscreen').hidden = true;
       $('detail-modal-export-pdf').hidden = true;
-      CURRENT_DETAIL_TAREFA_ID = null; CURRENT_DETAIL_NOTA_ID = null;
+      CURRENT_DETAIL_TAREFA_ID = null; CURRENT_DETAIL_NOTA_ID = null; CURRENT_DETAIL_EVENTO_ID = obj.id;
       bannerIcon.innerHTML = '<i class="fad fa-calendar-alt"></i>';
       banner.style.setProperty('--pdet-accent', EVENTO_COR[obj.tipo] || 'var(--gold)');
       addDetailField(body, 'Data', fmtEventoData(obj));
@@ -1561,7 +1651,7 @@
       actions.hidden = true;
       $('detail-modal-fullscreen').hidden = false;
       $('detail-modal-export-pdf').hidden = false;
-      CURRENT_DETAIL_TAREFA_ID = null; CURRENT_DETAIL_NOTA_ID = obj.id;
+      CURRENT_DETAIL_TAREFA_ID = null; CURRENT_DETAIL_NOTA_ID = obj.id; CURRENT_DETAIL_EVENTO_ID = null;
       bannerIcon.innerHTML = '<i class="fad fa-book-open"></i>';
       banner.style.removeProperty('--pdet-accent');
       if (obj.data) { dateBadge.textContent = fmtDate(obj.data); dateBadge.hidden = false; }
@@ -1595,12 +1685,14 @@
       contentEl.innerHTML = renderMarkdown(obj.conteudo_md);
       body.appendChild(contentEl);
     } else {
-      /* Editar/Excluir só aparecem pra tarefa — parte do CRUD completo do
-         hub (exceção documentada em LIFEOS.md, set/2026). */
+      /* Editar/Excluir — parte do CRUD completo do hub (exceção documentada
+         em LIFEOS.md, set/2026). */
       actions.hidden = false;
+      $('detail-modal-edit').setAttribute('aria-label', 'Editar tarefa');
+      $('detail-modal-delete').setAttribute('aria-label', 'Excluir tarefa');
       $('detail-modal-fullscreen').hidden = true;
       $('detail-modal-export-pdf').hidden = true;
-      CURRENT_DETAIL_TAREFA_ID = obj.id; CURRENT_DETAIL_NOTA_ID = null;
+      CURRENT_DETAIL_TAREFA_ID = obj.id; CURRENT_DETAIL_NOTA_ID = null; CURRENT_DETAIL_EVENTO_ID = null;
       bannerIcon.innerHTML = '<i class="fad fa-tasks"></i>';
       banner.style.setProperty('--pdet-accent', TAR_STATUS_COR[obj.status] || 'var(--gold)');
       addDetailField(body, 'Status', obj.status || '—');
@@ -1613,7 +1705,7 @@
     $('detail-modal').classList.add('open');
     syncModalScrollLock();
   }
-  function closeDetailModal() { $('detail-modal').classList.remove('open'); CURRENT_DETAIL_TAREFA_ID = null; CURRENT_DETAIL_NOTA_ID = null; syncModalScrollLock(); }
+  function closeDetailModal() { $('detail-modal').classList.remove('open'); CURRENT_DETAIL_TAREFA_ID = null; CURRENT_DETAIL_NOTA_ID = null; CURRENT_DETAIL_EVENTO_ID = null; syncModalScrollLock(); }
 
   /* ── Exportar PDF (só nota) — print-to-PDF nativo do navegador ───────
      Cópia isolada do mesmo padrão de notas.js (ver LIFEOS.md §2): popula
@@ -1771,6 +1863,12 @@
           var tag = document.createElement('span'); tag.className = 'hub-evt-tag'; tag.textContent = e.tipo;
           var cor = EVENTO_COR[e.tipo] || 'var(--mute)'; tag.style.color = cor; tag.style.borderColor = cor;
           var actions = document.createElement('span'); actions.className = 'row-actions';
+          var editBtn = document.createElement('button');
+          editBtn.type = 'button'; editBtn.className = 'row-action-btn';
+          editBtn.setAttribute('data-action', 'edit-evento'); editBtn.setAttribute('data-id', e.id);
+          editBtn.setAttribute('aria-label', 'Editar evento');
+          editBtn.innerHTML = '<i class="fad fa-pen"></i>';
+          actions.appendChild(editBtn);
           var delBtn = document.createElement('button');
           delBtn.type = 'button'; delBtn.className = 'row-action-btn row-action-danger';
           delBtn.setAttribute('data-action', 'delete-evento'); delBtn.setAttribute('data-id', e.id);
@@ -1849,9 +1947,13 @@
     btn.textContent = 'confirmar?';
     DELETE_PENDING = { key: key, btn: btn, timeoutId: setTimeout(resetDeletePending, 3000) };
   }
+  /* Chamado tanto pelo lixinho do #day-modal quanto pelo Excluir do
+     #detail-modal — no segundo caso fecha o detail-modal (o registro não
+     existe mais) e o #day-modal por baixo, se houver, re-renderiza. */
   function onDeleteEvento(btn, id) {
     confirmDelete(btn, 'evt:' + id, function () { return apiEventosDelete(SESSION_PW, id); }, function () {
-      for (var i = 0; i < EVENTOS.length; i++) { if (EVENTOS[i].id === id) { EVENTOS.splice(i, 1); break; } }
+      for (var i = 0; i < EVENTOS.length; i++) { if (String(EVENTOS[i].id) === String(id)) { EVENTOS.splice(i, 1); break; } }
+      if (String(CURRENT_DETAIL_EVENTO_ID) === String(id)) closeDetailModal();
       writeHubCache();
       renderMiniCal();
       renderEventosTimeline();
@@ -1860,7 +1962,8 @@
     });
   }
 
-  /* ── Modal · novo evento (botão "Adicionar" do card de Calendário) ── */
+  /* ── Modal · evento — criar (botão "Adicionar" do card de Calendário) ou
+     editar (Editar do #detail-modal / lápis do #day-modal) ── */
   /* Chips clicáveis pro tipo (em vez de <select>) — clicar pra marcar é mais
      direto que abrir um dropdown. A cor de cada chip é a MESMA de
      EVENTO_COR, guardada em --opt-color pra a borda acender quando
@@ -1900,11 +2003,12 @@
      default; PROJETOS já vem carregado do boot (apiProjetosQuery).
      Só projetos "Em Progresso" entram — mesmo filtro e mesma razão do
      picker de Tarefas (buildProjetoChipPicker, acima): não faz sentido
-     vincular a um projeto Pausado/Feito/Não Iniciado. Sem a exceção do
-     "projeto atual" que existe lá — eventos não têm edição (só create/
-     delete, ver LIFEOS.md §6.1), então nunca há uma seleção prévia a
-     preservar. */
-  function renderEventoProjetoPicker() {
+     vincular a um projeto Pausado/Feito/Não Iniciado. Mesma exceção do
+     "projeto atual" de lá: ao EDITAR um evento vinculado a um projeto que
+     não está (ou deixou de estar) Em Progresso, ele continua na lista —
+     senão o chip da seleção atual sumiria e o evento pareceria "sem
+     projeto" no formulário. */
+  function renderEventoProjetoPicker(currentId) {
     var host = $('evento-projeto-picker');
     if (!host) return;
     host.innerHTML = '';
@@ -1912,7 +2016,7 @@
     nenhum.type = 'button'; nenhum.className = 'evento-projeto-opt'; nenhum.setAttribute('data-id', '');
     nenhum.textContent = 'Nenhum';
     host.appendChild(nenhum);
-    PROJETOS.filter(function (p) { return p.status === 'Em Progresso'; }).forEach(function (p) {
+    PROJETOS.filter(function (p) { return p.status === 'Em Progresso' || (currentId && p.id === currentId); }).forEach(function (p) {
       var btn = document.createElement('button');
       btn.type = 'button'; btn.className = 'evento-projeto-opt'; btn.setAttribute('data-id', p.id);
       btn.textContent = (p.emoji ? p.emoji + ' ' : '') + p.name;
@@ -1925,20 +2029,27 @@
     for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('is-selected', btns[i].getAttribute('data-id') === (id || ''));
   }
 
-  function openEventoModal() {
+  /* Um único modal pros dois modos — EDIT_EVENTO_ID null = criar (mesmo
+     padrão de openTarefaModal). */
+  function openEventoModal(id) {
     if ($('day-modal').classList.contains('open')) closeDayModal();
-    $('evento-nome').value = '';
-    $('evento-date').value = todayISO();
-    $('evento-date-fim').value = '';
-    setEventoTipo('vida');
-    setEventoProjeto('');
+    EDIT_EVENTO_ID = id || null;
+    var ev = null;
+    if (id) { for (var i = 0; i < EVENTOS.length; i++) { if (String(EVENTOS[i].id) === String(id)) { ev = EVENTOS[i]; break; } } }
+    $('evento-modal-title').textContent = ev ? 'Editar evento' : 'Novo evento';
+    renderEventoProjetoPicker(ev ? ev.projeto_id : null);
+    $('evento-nome').value = ev ? ev.name : '';
+    $('evento-date').value = ev ? ev.date : todayISO();
+    $('evento-date-fim').value = (ev && ev.date_fim) ? ev.date_fim : '';
+    setEventoTipo(ev ? ev.tipo : 'vida');
+    setEventoProjeto(ev ? ev.projeto_id : '');
     $('evento-error').textContent = '';
     setEventoSaving(false);
     $('evento-modal').classList.add('open');
     syncModalScrollLock();
-    var ni = $('evento-nome'); if (ni) ni.focus();
+    if (!ev) { var ni = $('evento-nome'); if (ni) ni.focus(); }
   }
-  function closeEventoModal() { $('evento-modal').classList.remove('open'); syncModalScrollLock(); }
+  function closeEventoModal() { $('evento-modal').classList.remove('open'); EDIT_EVENTO_ID = null; syncModalScrollLock(); }
   function setEventoSaving(on) { $('evento-save').disabled = on; $('evento-save').textContent = on ? 'Salvando…' : 'Salvar'; }
   function onEventoSubmit(e) {
     e.preventDefault();
@@ -1955,15 +2066,32 @@
     if (dFim && dFim < d) { $('evento-error').textContent = 'data final não pode ser antes da data de início'; return; }
     setEventoSaving(true);
     $('evento-error').textContent = '';
-    apiEventosCreate(SESSION_PW, { name: nome, date: d, date_fim: dFim, tipo: tipo, projeto_id: projeto_id }).then(function (j) {
-      EVENTOS.push(j.evento);
+    var payload = { name: nome, date: d, date_fim: dFim, tipo: tipo, projeto_id: projeto_id };
+    var req = EDIT_EVENTO_ID
+      ? apiEventosUpdate(SESSION_PW, EDIT_EVENTO_ID, payload)
+      : apiEventosCreate(SESSION_PW, payload);
+    /* Guarda ANTES de fechar o modal — closeEventoModal() zera
+       EDIT_EVENTO_ID (mesmo bug já corrigido em onTarefaSubmit, ver
+       LIFEOS.md §9). */
+    var wasEditing = EDIT_EVENTO_ID;
+    req.then(function (j) {
+      var saved = j.evento;
       closeEventoModal();
-      /* o mês do evento criado pode estar fora da janela já carregada —
-         marca como carregado (já temos ele em memória; não precisa refetch)
-         e navega o calendário até lá, pra quem cria já ver o resultado. */
-      var evYm = j.evento.date.slice(0, 7);
-      HUB_EVENTOS_LOADED[evYm] = true;
+      if (wasEditing) {
+        for (var i = 0; i < EVENTOS.length; i++) { if (String(EVENTOS[i].id) === String(saved.id)) { EVENTOS[i] = saved; break; } }
+      } else {
+        EVENTOS.push(saved);
+      }
+      /* o mês do evento salvo pode estar fora da janela já carregada —
+         marca como carregado (o evento em si já está em memória) e navega
+         o calendário até lá, pra quem cria/edita já ver o resultado. Só
+         marca ao CRIAR: numa edição que move o evento pra um mês ainda não
+         buscado, marcar esconderia os OUTROS eventos daquele mês —
+         ensureHubCalMonth busca e o dedup por id evita duplicar este. */
+      var evYm = saved.date.slice(0, 7);
+      if (!wasEditing) HUB_EVENTOS_LOADED[evYm] = true;
       HUB_CAL_YM = evYm;
+      if (wasEditing) ensureHubCalMonth(evYm).then(function () { writeHubCache(); renderMiniCal(); syncEventTimelineHeight(); });
       writeHubCache();
       renderMiniCal();
       renderEventosTimeline();
@@ -2131,6 +2259,7 @@
      tarefas.js, cópia isolada ver LIFEOS.md §2). Sem gráficos — removidos
      por decisão do autor (achou desnecessários). ── */
   var TAR_PROJETO_FILTRO = '';  /* '' = todos os projetos */
+  var TAR_BUSCA_FILTRO = '';    /* busca por título (minúsculo), compõe com o projeto/view */
 
   function renderTarStatusCounts() {
     var elNao = $('tar-count-nao-iniciado'), elAnd = $('tar-count-em-andamento'), elFeito = $('tar-count-feito');
@@ -2162,6 +2291,7 @@
     var viewTarefas = activeViewTarefas();
     var rows = TAREFAS_ALL.filter(function (t) {
       if (TAR_PROJETO_FILTRO && t.projeto_id !== TAR_PROJETO_FILTRO) return false;
+      if (TAR_BUSCA_FILTRO && (t.name || '').toLowerCase().indexOf(TAR_BUSCA_FILTRO) === -1) return false;
       return matchesViewGeneric(viewTarefas, getCampoTarefa, t);
     });
     TAR_STATUS.forEach(function (status) {
@@ -2752,6 +2882,184 @@
     });
   }
 
+  /* ── Citações: banner sorteado + #citacoes-modal (set/2026) ─────────
+     Diferente das outras listagens do hub, a área não mostra a lista de
+     cara: mostra UMA citação, sorteada a cada abertura da página (boot ou
+     ↻). A lista completa, com editar/excluir, fica no modal que o banner
+     abre. Ver LIFEOS.md §3.6. */
+
+  /* Monta o texto da citação em `host`, transformando `*trecho*` em
+     <strong> (destaque no acento). Só createElement/textContent — o texto
+     vem do banco e nunca passa por innerHTML. */
+  function fillCitacaoTexto(host, texto, comAspas) {
+    host.textContent = '';
+    if (comAspas) {
+      var qo = document.createElement('span'); qo.className = 'cit-q cit-q-open'; qo.textContent = '“';
+      host.appendChild(qo);
+    }
+    var parts = String(texto || '').split(/\*([^*]+)\*/);
+    for (var i = 0; i < parts.length; i++) {
+      if (!parts[i]) continue;
+      if (i % 2 === 1) {
+        var strong = document.createElement('strong'); strong.textContent = parts[i];
+        host.appendChild(strong);
+      } else {
+        host.appendChild(document.createTextNode(parts[i]));
+      }
+    }
+    if (comAspas) {
+      var qc = document.createElement('span'); qc.className = 'cit-q cit-q-close'; qc.textContent = '”';
+      host.appendChild(qc);
+    }
+  }
+
+  function findCitacao(id) {
+    for (var i = 0; i < CITACOES.length; i++) { if (String(CITACOES[i].id) === String(id)) return CITACOES[i]; }
+    return null;
+  }
+
+  /* Sorteia uma citação pro banner. Evita repetir a que já está na tela
+     quando há mais de uma, senão um ↻ pode "não fazer nada". */
+  function sortearCitacao() {
+    if (!CITACOES.length) { CITACAO_ATUAL_ID = null; return; }
+    var pool = CITACOES.length > 1
+      ? CITACOES.filter(function (c) { return String(c.id) !== String(CITACAO_ATUAL_ID); })
+      : CITACOES;
+    CITACAO_ATUAL_ID = pool[Math.floor(Math.random() * pool.length)].id;
+  }
+
+  function renderCitacaoBanner() {
+    var banner = $('cit-banner');
+    if (!banner) return;
+    /* A atual pode ter sido excluída no modal — sorteia outra. */
+    if (!findCitacao(CITACAO_ATUAL_ID)) sortearCitacao();
+    var c = findCitacao(CITACAO_ATUAL_ID);
+    banner.classList.toggle('is-empty', !c);
+    if (c) {
+      fillCitacaoTexto($('cit-banner-texto'), c.texto, true);
+      $('cit-banner-autor').textContent = '— ' + c.autor;
+      $('cit-banner-autor').hidden = false;
+    } else {
+      $('cit-banner-texto').textContent = 'Nenhuma citação ainda — clique para adicionar a primeira.';
+      $('cit-banner-autor').hidden = true;
+    }
+  }
+
+  function renderCitacoesList() {
+    var host = $('cit-list');
+    host.innerHTML = '';
+    var n = CITACOES.length;
+    $('cit-count').textContent = n === 1 ? '1 citação' : n + ' citações';
+    if (!n) {
+      var empty = document.createElement('div'); empty.className = 'cit-empty';
+      empty.textContent = 'nenhuma citação ainda';
+      host.appendChild(empty);
+      return;
+    }
+    CITACOES.forEach(function (c) {
+      var row = document.createElement('div'); row.className = 'cit-item';
+      var main = document.createElement('div'); main.className = 'cit-item-main';
+      var texto = document.createElement('span'); texto.className = 'cit-texto';
+      fillCitacaoTexto(texto, c.texto, true);
+      var autor = document.createElement('span'); autor.className = 'cit-autor'; autor.textContent = '— ' + c.autor;
+      main.appendChild(texto); main.appendChild(autor);
+
+      var actions = document.createElement('div'); actions.className = 'row-actions';
+      var edit = document.createElement('button');
+      edit.type = 'button'; edit.className = 'row-action-btn';
+      edit.setAttribute('data-action', 'edit-citacao'); edit.setAttribute('data-id', c.id);
+      edit.setAttribute('aria-label', 'Editar citação');
+      edit.innerHTML = '<i class="fad fa-pen"></i>';
+      var del = document.createElement('button');
+      del.type = 'button'; del.className = 'row-action-btn row-action-danger';
+      del.setAttribute('data-action', 'delete-citacao'); del.setAttribute('data-id', c.id);
+      del.setAttribute('aria-label', 'Excluir citação');
+      del.innerHTML = '<i class="fad fa-trash"></i>';
+      actions.appendChild(edit); actions.appendChild(del);
+
+      row.appendChild(main); row.appendChild(actions);
+      host.appendChild(row);
+    });
+  }
+
+  /* Estado lista ⇄ formulário dentro do mesmo modal. */
+  function showCitacoesList() {
+    EDIT_CITACAO_ID = null;
+    $('cit-form').hidden = true;
+    $('cit-list-view').hidden = false;
+    $('citacoes-modal-title').textContent = 'Citações';
+    renderCitacoesList();
+  }
+  function showCitacaoForm(id) {
+    var c = id ? findCitacao(id) : null;
+    EDIT_CITACAO_ID = c ? c.id : null;
+    $('citacoes-modal-title').textContent = c ? 'Editar citação' : 'Nova citação';
+    $('cit-texto-input').value = c ? c.texto : '';
+    $('cit-autor-input').value = c ? c.autor : '';
+    $('cit-error').textContent = '';
+    setCitacaoSaving(false);
+    $('cit-list-view').hidden = true;
+    $('cit-form').hidden = false;
+    $('cit-texto-input').focus();
+  }
+  function setCitacaoSaving(on) { $('cit-save').disabled = on; $('cit-save').textContent = on ? 'Salvando…' : 'Salvar'; }
+
+  function openCitacoesModal() {
+    /* Banner vazio: vai direto pro formulário, a lista estaria vazia. */
+    if (CITACOES.length) showCitacoesList(); else showCitacaoForm(null);
+    $('citacoes-modal').classList.add('open');
+    syncModalScrollLock();
+  }
+  function closeCitacoesModal() {
+    $('citacoes-modal').classList.remove('open');
+    EDIT_CITACAO_ID = null;
+    syncModalScrollLock();
+  }
+
+  function onCitacaoSubmit(e) {
+    e.preventDefault();
+    var texto = $('cit-texto-input').value.trim();
+    var autor = $('cit-autor-input').value.trim();
+    if (!texto) { $('cit-error').textContent = 'a citação não pode ficar vazia'; return; }
+    if (!autor) { $('cit-error').textContent = 'diga quem disse'; return; }
+
+    setCitacaoSaving(true);
+    $('cit-error').textContent = '';
+    /* Guarda ANTES de trocar de estado — showCitacoesList() zera
+       EDIT_CITACAO_ID (mesma armadilha da LIFEOS.md §9). */
+    var wasEditing = EDIT_CITACAO_ID;
+    var payload = { texto: texto, autor: autor };
+    var req = wasEditing
+      ? apiCitacoes(SESSION_PW, { action: 'update', id: wasEditing, patch: payload })
+      : apiCitacoes(SESSION_PW, { action: 'create', citacao: payload });
+    req.then(function (j) {
+      var saved = j.citacao;
+      if (wasEditing) {
+        for (var i = 0; i < CITACOES.length; i++) { if (String(CITACOES[i].id) === String(saved.id)) { CITACOES[i] = saved; break; } }
+      } else {
+        CITACOES.push(saved);
+        /* Primeira citação do sistema: o banner vazio passa a mostrá-la. */
+        if (!CITACAO_ATUAL_ID) CITACAO_ATUAL_ID = saved.id;
+      }
+      writeHubCache();
+      renderCitacaoBanner();
+      showCitacoesList();
+    }).catch(function (err) {
+      setCitacaoSaving(false);
+      if (err && err.code === 'unauthorized') { onLogout(); return; }
+      $('cit-error').textContent = 'erro ao salvar — ' + ((err && err.detail) || 'tente de novo');
+    });
+  }
+
+  function onDeleteCitacaoClick(btn, id) {
+    confirmDelete(btn, 'citacao:' + id, function () { return apiCitacoes(SESSION_PW, { action: 'delete', id: id }); }, function () {
+      for (var i = 0; i < CITACOES.length; i++) { if (String(CITACOES[i].id) === String(id)) { CITACOES.splice(i, 1); break; } }
+      writeHubCache();
+      renderCitacaoBanner();
+      renderCitacoesList();
+    });
+  }
+
   /* ── Manifestações: grid de cards (migrado do Notion, set/2026) ──────
      Cada card mostra o banner real (Storage, já re-hospedado na migração)
      ou o banner padrão estilizado quando a entrada não tem imagem real
@@ -2957,7 +3265,7 @@
          idempotente (só busca o que falta), então isso não gera as 6
          chamadas de novo, só as que realmente faltam (geralmente zero). */
   var HUB_CACHE_KEY = 'lifeos_hub_cache';
-  var HUB_CACHE_V = 3; /* bump: cache ganhou os campos views_notas/views_tarefas */
+  var HUB_CACHE_V = 4; /* bump: cache ganhou o campo citacoes */
   function readHubCache() {
     try {
       var raw = localStorage.getItem(HUB_CACHE_KEY);
@@ -2980,6 +3288,7 @@
         notas: NOTAS_HUB,
         views_notas: VIEWS_NOTAS,
         views_tarefas: VIEWS_TAREFAS,
+        citacoes: CITACOES,
       }));
     } catch (_e) { /* quota/indisponível: cache só em memória nesta sessão */ }
   }
@@ -3006,8 +3315,12 @@
       apiNotasQuery(SESSION_PW),
       apiViewsQuery(SESSION_PW, 'notas'),
       apiViewsQuery(SESSION_PW, 'tarefas'),
+      /* Citações não derrubam o boot: sem a function/tabela (instalação
+         que ainda não aplicou a migration 0006), o banner só fica vazio. */
+      apiCitacoes(SESSION_PW, { action: 'query' }).catch(function () { return { citacoes: [] }; }),
     ]).then(function (res) {
-      var fin = res[0], evt = res[1], proj = res[2], tar = res[3], manif = res[4], notas = res[5], viewsNotas = res[6], viewsTarefas = res[7];
+      var fin = res[0], evt = res[1], proj = res[2], tar = res[3], manif = res[4], notas = res[5], viewsNotas = res[6], viewsTarefas = res[7], cit = res[8];
+      CITACOES = cit.citacoes || [];
       MROWS = fin.movimentacoes || [];
       SALDO_ABERTURA = fin.saldo_abertura || 0;
       FIN_PREV_ROWS = fin.movimentacoes_prev || [];
@@ -3045,6 +3358,7 @@
     NOTAS_HUB = cache.notas || [];
     VIEWS_NOTAS = cache.views_notas || [];
     VIEWS_TAREFAS = cache.views_tarefas || [];
+    CITACOES = cache.citacoes || [];
     EVENTOS = (cache.eventos && cache.eventos.eventos) || [];
     HUB_EVENTOS_LOADED = (cache.eventos && cache.eventos.loaded) || {};
 
@@ -3063,7 +3377,14 @@
         FIN_MONTH_CACHE = {}; FIN_MONTH_CACHE[t] = MROWS; FIN_MONTH_CACHE[pt] = FIN_PREV_ROWS;
       });
     }
-    return Promise.all([finPromise, topUpEventosWindow()]);
+    /* Citações são a exceção ao "eterno até ↻": re-busca a cada boot. O
+       banner sorteia do conjunto inteiro, e citações entram também pelo MCP
+       (create_citacao) — sem isso, uma nova só concorreria ao sorteio depois
+       de um ↻ manual. Falha aqui não derruba o boot: fica o que veio do cache. */
+    var citPromise = apiCitacoes(SESSION_PW, { action: 'query' }).then(function (j) {
+      CITACOES = j.citacoes || [];
+    }).catch(function () {});
+    return Promise.all([finPromise, topUpEventosWindow(), citPromise]);
   }
 
   /* Label "sincronizado" (mesmo padrão de #fetched-at em financas.html) —
@@ -3077,6 +3398,10 @@
   }
 
   function renderAllHub() {
+    /* Novo sorteio a cada render completo (abrir o hub ou ↻) — é a
+       diferença de Citações pras outras áreas, ver LIFEOS.md §3.6. */
+    sortearCitacao();
+    renderCitacaoBanner();
     renderFinancasPreview();
     renderMiniCal();
     renderLegend();
@@ -3176,7 +3501,8 @@
     localStorage.removeItem(LS_KEY);
     dropHubCache();
     SESSION_PW = ''; MROWS = []; FIN_PREV_ROWS = []; FIN_MONTH_CACHE = {}; EVENTOS = []; HUB_EVENTOS_LOADED = {}; PROJETOS = []; TAREFAS_ALL = []; MANIFESTACOES = [];
-    closeDayModal(); closeEventoModal(); closeDetailModal(); closeTarefaModal(); closeProjetoModal(); closeManifestacaoModal(); resetDeletePending();
+    CITACOES = []; CITACAO_ATUAL_ID = null;
+    closeDayModal(); closeEventoModal(); closeDetailModal(); closeTarefaModal(); closeProjetoModal(); closeManifestacaoModal(); closeCitacoesModal(); resetDeletePending();
     TAREFA_TIPO_SEL = []; PROJETO_TAGS_SEL = []; MANIFESTACAO_TAGS_SEL = []; MANIFESTACAO_BANNER_FILE = null;
     if (MANIF_FOCUS) { MANIF_FOCUS = false; $('app').classList.remove('is-manif-focus'); $('quicknav-manifestacoes').classList.remove('is-active'); }
     /* Volta a UI do toggle/botão do calendário pro default (eventos), sem
@@ -3187,7 +3513,7 @@
     var addBtnReset = $('add-evento-btn');
     addBtnReset.innerHTML = 'Adicionar <i class="fad fa-plus"></i>';
     addBtnReset.setAttribute('aria-label', 'Novo evento');
-    TAR_PROJETO_FILTRO = ''; DRAG_TAREFA_ID = null;
+    TAR_PROJETO_FILTRO = ''; TAR_BUSCA_FILTRO = ''; $('tar-busca-input').value = ''; DRAG_TAREFA_ID = null;
     VIEWS_NOTAS = []; VIEWS_TAREFAS = []; ACTIVE_VIEW_NOTAS_ID = null; ACTIVE_VIEW_TAREFAS_ID = null;
     /* não chapa 'Em Progresso': o status pode ter sido renomeado na tela
        de Tags, e o filtro precisa apontar pra algo que existe. */
@@ -3267,27 +3593,43 @@
     $('day-modal-body').addEventListener('click', function (e) {
       var btn = e.target.closest ? e.target.closest('.row-action-btn[data-action="delete-evento"]') : null;
       if (btn) { onDeleteEvento(btn, btn.getAttribute('data-id')); return; }
+      var editBtn = e.target.closest ? e.target.closest('.row-action-btn[data-action="edit-evento"]') : null;
+      if (editBtn) { openEventoModal(editBtn.getAttribute('data-id')); return; }
       onHubListRowActivate(e);
     });
     $('detail-modal-close').addEventListener('click', closeDetailModal);
     $('detail-modal').addEventListener('click', function (e) { if (e.target === $('detail-modal')) closeDetailModal(); });
     $('detail-modal-edit').addEventListener('click', function () {
-      var id = CURRENT_DETAIL_TAREFA_ID;
+      var tarefaId = CURRENT_DETAIL_TAREFA_ID, eventoId = CURRENT_DETAIL_EVENTO_ID;
       closeDetailModal();
-      if (id) openTarefaModal(id);
+      if (tarefaId) openTarefaModal(tarefaId);
+      else if (eventoId) openEventoModal(eventoId);
     });
     $('detail-modal-delete').addEventListener('click', function (e) {
       if (CURRENT_DETAIL_TAREFA_ID) onDeleteTarefaClick(e.currentTarget, CURRENT_DETAIL_TAREFA_ID);
+      else if (CURRENT_DETAIL_EVENTO_ID) onDeleteEvento(e.currentTarget, CURRENT_DETAIL_EVENTO_ID);
     });
     $('detail-modal-fullscreen').addEventListener('click', function () {
       if (CURRENT_DETAIL_NOTA_ID) location.href = 'notas.html?nota=' + encodeURIComponent(CURRENT_DETAIL_NOTA_ID);
     });
     $('detail-modal-export-pdf').addEventListener('click', function () { exportNotaPdf(CURRENT_DETAIL_NOTA_ID); });
     /* Clicar em qualquer lugar que NÃO seja um botão de excluir cancela uma
-       confirmação pendente na hora, em vez de esperar os 3s do timeout. */
+       confirmação pendente na hora, em vez de esperar os 3s do timeout.
+
+       Bug corrigido (set/2026 — "não consigo excluir eventos"): o clique
+       quase sempre cai no <i> do ícone, não no <button>. confirmDelete()
+       troca o conteúdo do botão por "confirmar?" (textContent), o que
+       DESANEXA esse <i> do DOM ainda durante o dispatch — quando o evento
+       chega aqui por bubbling, e.target.closest() num nó solto devolve
+       null, e o reset desfazia o "confirmar?" no mesmo clique. O segundo
+       clique nunca achava a confirmação pendente. composedPath() é
+       congelado no início do dispatch, então ainda enxerga o botão. */
     document.addEventListener('click', function (e) {
-      var btn = e.target.closest ? e.target.closest('.row-action-btn') : null;
-      if (!btn) resetDeletePending();
+      var path = e.composedPath ? e.composedPath() : [e.target];
+      for (var i = 0; i < path.length; i++) {
+        if (path[i].classList && path[i].classList.contains('row-action-btn')) return;
+      }
+      resetDeletePending();
     });
     renderEventoTipoPicker();
     $('evento-tipo-picker').addEventListener('click', function (e) {
@@ -3421,11 +3763,31 @@
     $('manifestacao-modal-close').addEventListener('click', closeManifestacaoModal);
     $('manifestacao-modal').addEventListener('click', function (e) { if (e.target === $('manifestacao-modal')) closeManifestacaoModal(); });
 
+    /* ── Citações: banner + #citacoes-modal (ver LIFEOS.md §3.6) ── */
+    $('cit-banner').addEventListener('click', openCitacoesModal);
+    $('citacoes-modal-close').addEventListener('click', closeCitacoesModal);
+    $('citacoes-modal').addEventListener('click', function (e) { if (e.target === $('citacoes-modal')) closeCitacoesModal(); });
+    $('cit-add-btn').addEventListener('click', function () { showCitacaoForm(null); });
+    $('cit-list').addEventListener('click', function (e) {
+      var editBtn = e.target.closest ? e.target.closest('.row-action-btn[data-action="edit-citacao"]') : null;
+      if (editBtn) { showCitacaoForm(editBtn.getAttribute('data-id')); return; }
+      var delBtn = e.target.closest ? e.target.closest('.row-action-btn[data-action="delete-citacao"]') : null;
+      if (delBtn) onDeleteCitacaoClick(delBtn, delBtn.getAttribute('data-id'));
+    });
+    $('cit-form').addEventListener('submit', onCitacaoSubmit);
+    /* Cancelar volta pra lista — ou fecha, se não há lista pra voltar. */
+    $('cit-cancel').addEventListener('click', function () { if (CITACOES.length) showCitacoesList(); else closeCitacoesModal(); });
+
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
       /* drawer primeiro: ele é o único elemento acima dos modais (z 1100),
          então é sempre ele que o ESC deve alcançar quando está aberto */
       if ($('config-drawer').classList.contains('open')) { closeDrawer(); return; }
+      if ($('citacoes-modal').classList.contains('open')) {
+        /* No formulário, ESC volta pra lista; na lista, fecha o modal. */
+        if (!$('cit-form').hidden && CITACOES.length) showCitacoesList(); else closeCitacoesModal();
+        return;
+      }
       if ($('manifestacao-modal').classList.contains('open')) { closeManifestacaoModal(); return; }
       if ($('projeto-modal').classList.contains('open')) { closeProjetoModal(); return; }
       if ($('tarefa-modal').classList.contains('open')) { closeTarefaModal(); return; }
@@ -3447,6 +3809,10 @@
     $('quicknav-manifestacoes').addEventListener('click', toggleManifFocus);
     $('tar-projeto-select').addEventListener('change', function (e) {
       TAR_PROJETO_FILTRO = e.target.value;
+      renderTarMiniKanban();
+    });
+    $('tar-busca-input').addEventListener('input', function (e) {
+      TAR_BUSCA_FILTRO = e.target.value.trim().toLowerCase();
       renderTarMiniKanban();
     });
     $('not-projeto-filtro').addEventListener('change', function (e) {

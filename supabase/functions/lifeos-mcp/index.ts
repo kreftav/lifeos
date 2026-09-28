@@ -4,10 +4,18 @@
 // -- pensado pra ser cadastrado como "custom connector" em claude.ai (Settings
 // > Connectors > Add custom connector, colando a URL desta function + token).
 // Expoe tools de CONSULTA sobre todo o sistema (Notas, Tarefas, Projetos,
-// Eventos, Manifestações, Finanças) e tools de ESCRITA em quatro domínios:
-// Notas (create_nota, update_nota), Tarefas (create_tarefa, update_tarefa),
-// Eventos (create_evento, update_evento) e Finanças (create_movimentacao,
-// update_movimentacao). Projetos e Manifestações continuam só-leitura.
+// Eventos, Manifestações, Citações, Finanças) e tools de ESCRITA em cinco
+// domínios: Notas (create_nota, update_nota), Tarefas (create_tarefa,
+// update_tarefa), Eventos (create_evento, update_evento), Finanças
+// (create_movimentacao, update_movimentacao) e Citações (create_citacao --
+// só criar, set/2026). Projetos e Manifestações continuam só-leitura.
+//
+// Memória de longo prazo (27/set/2026, LIFEOS.md §17): list_memorias,
+// get_memoria, create_memoria, add_registro, update_memoria,
+// update_registro. Além das tools, o `initialize` devolve `instructions`
+// com o ÍNDICE das memórias montado na hora (buildInstructions) -- o cliente
+// injeta isso no system prompt e o modelo começa a conversa sabendo o que
+// existe, sem gastar uma tool call.
 // Nenhum domínio ganha DELETE por aqui -- escrita destrutiva via MCP segue
 // fora de escopo, decisão mantida mesmo depois de abrir create/update pra
 // além de Notas (22/set/2026).
@@ -132,6 +140,7 @@ const FALLBACK: Record<string, string[]> = {
   manifestacao_tag: ["Vida", "Financeiro", "Carreira", "Saúde", "Lazer"],
   mov_direcao: ["Entrada", "Saida"],
   mov_meio: ["Crédito", "Débito", "Pix", "Vale", "Boleto"],
+  memoria_categoria: ["Perfil", "Preferências", "Projetos", "Referências", "Vida"],
 };
 
 // Preenchido uma vez por invocação, antes de montar as tools -- o enum de
@@ -232,8 +241,7 @@ function buildTools() {
     description:
       "Cria uma nova nota no LifeOS. A data é sempre a data atual (não é um " +
       "parâmetro). Todos os outros campos são obrigatórios: nome, tipo/tags, " +
-      "ao menos um projeto vinculado, e o conteúdo completo em markdown. " +
-      "Única tool de escrita deste servidor -- todo o resto é só consulta.",
+      "ao menos um projeto vinculado, e o conteúdo completo em markdown.",
     inputSchema: {
       type: "object",
       properties: {
@@ -407,11 +415,201 @@ function buildTools() {
     },
   },
   {
+    name: "search_citacoes",
+    description:
+      "Lê as citações guardadas no LifeOS (texto + quem disse). Sem " +
+      "filtros devolve todas. Trechos entre *asteriscos* no texto são " +
+      "destaques visuais do app, não parte da frase.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        texto: { type: "string", description: "Trecho do texto da citação." },
+        autor: { type: "string", description: "Trecho do nome de quem disse." },
+        limit: { type: "integer", description: "Máximo de resultados (padrão 20, máximo 50)." },
+      },
+    },
+  },
+  {
+    name: "create_citacao",
+    description:
+      "Adiciona uma citação ao LifeOS. Ela passa a concorrer ao sorteio do " +
+      "banner do painel. Envolva um trecho em *asteriscos* para destacá-lo " +
+      "(ex.: \"elimine *duas coisas*\") — opcional.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        texto: { type: "string", description: "O texto da citação, sem aspas em volta." },
+        autor: { type: "string", description: "Nome de quem disse." },
+      },
+      required: ["texto", "autor"],
+    },
+  },
+  {
+    name: "list_memorias",
+    description:
+      "Lista o ÍNDICE da memória de longo prazo sobre o usuário: título, " +
+      "categoria, descrição curta e nº de registros de cada memória -- sem " +
+      "o conteúdo. Use para descobrir quais memórias existem e depois abra " +
+      "as relevantes com get_memoria. O mesmo índice já vem nas instruções " +
+      "do servidor ao conectar; chame esta tool para conferir a versão atual.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        categoria: { type: "string", enum: VOCAB.memoria_categoria, description: "Filtra por uma categoria (opcional)." },
+      },
+    },
+  },
+  {
+    name: "get_memoria",
+    description:
+      "Abre uma ou mais memórias e devolve todos os registros de cada uma, em " +
+      "ordem cronológica, com data e origem. Cada registro reflete o que era " +
+      "verdade QUANDO foi escrito -- confira a data antes de tratar um fato " +
+      "antigo como atual.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memorias: {
+          type: "array", items: { type: "string" }, minItems: 1,
+          description: "Títulos (exatos ou trecho único) ou ids das memórias a abrir.",
+        },
+      },
+      required: ["memorias"],
+    },
+  },
+  {
+    name: "create_memoria",
+    description:
+      "Cria uma memória nova (um TEMA) sobre o usuário. Só use quando nenhuma " +
+      "memória existente cobre o assunto -- se já existir uma, adicione um " +
+      "registro nela com add_registro. O título é único. A descrição é o que " +
+      "aparece no índice: uma ou duas frases dizendo do que a memória trata, " +
+      "pra que um modelo decida se vale abri-la sem ler o conteúdo.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        titulo: { type: "string", description: "Título curto e específico (máx. 120 caracteres)." },
+        descricao: { type: "string", description: "Uma ou duas frases sobre do que a memória trata (máx. 400 caracteres)." },
+        categoria: { type: "string", enum: VOCAB.memoria_categoria, description: "Categoria da memória." },
+        registros: { type: "array", items: { type: "string" }, description: "Registros iniciais -- um fato por item (opcional)." },
+        origem: { type: "string", description: "Quem está escrevendo: o cliente/harness, ex.: 'claude-code', 'claude.ai'." },
+      },
+      required: ["titulo", "descricao", "categoria"],
+    },
+  },
+  {
+    name: "add_registro",
+    description:
+      "Acrescenta um registro (um fato datado) a uma memória existente. É a " +
+      "forma normal de a memória crescer. Um registro = um fato autocontido, " +
+      "legível sem o resto da conversa. Não registre o que é efêmero (o que " +
+      "só importa nesta conversa) nem o que já está registrado -- se um fato " +
+      "antigo mudou, corrija-o com update_registro em vez de duplicar.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memoria: { type: "string", description: "Título (exato ou trecho único) ou id da memória." },
+        texto: { type: "string", description: "O fato, em texto corrido (máx. 8000 caracteres)." },
+        origem: { type: "string", description: "Quem está escrevendo: o cliente/harness, ex.: 'claude-code', 'claude.ai'." },
+      },
+      required: ["memoria", "texto"],
+    },
+  },
+  {
+    name: "update_memoria",
+    description:
+      "Atualiza título, descrição e/ou categoria de uma memória -- PATCH " +
+      "parcial: só os campos enviados mudam. Os registros não são tocados.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memoria: { type: "string", description: "Título atual (exato ou trecho único) ou id da memória." },
+        titulo: { type: "string", description: "Novo título." },
+        descricao: { type: "string", description: "Nova descrição." },
+        categoria: { type: "string", enum: VOCAB.memoria_categoria, description: "Nova categoria." },
+      },
+      required: ["memoria"],
+    },
+  },
+  {
+    name: "update_registro",
+    description:
+      "Corrige o texto de um registro existente (id vem de get_memoria). " +
+      "SUBSTITUIÇÃO: envie o TEXTO INTEIRO e final do registro, nunca só o " +
+      "trecho que mudou. A data original do registro se mantém. Excluir " +
+      "memórias ou registros não é possível por aqui -- só pela tela do LifeOS.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "id do registro (retornado por get_memoria)." },
+        texto: { type: "string", description: "Texto INTEIRO e final do registro." },
+      },
+      required: ["id", "texto"],
+    },
+  },
+  {
+    name: "resumo_financeiro",
+    description:
+      "Panorama financeiro de um mês (ou comparação de até 12 meses) já " +
+      "AGREGADO com as mesmas regras da tela de Finanças do LifeOS -- use " +
+      "esta tool para qualquer pergunta sobre quanto entrou, saiu, sobrou ou " +
+      "está devendo, em vez de somar linhas de search_movimentacoes (somar " +
+      "linhas cruas conta a compra no crédito e o pagamento da fatura duas " +
+      "vezes). O nome da movimentação É a categoria (não há outro campo); " +
+      "nomes são agrupados sem acento, caixa ou apelido. " +
+      (RATEIOS.length ? `${RATEIOS.join(", ")} são rateios: a Entrada é a parte de outras pessoas, não renda. ` : "") +
+      "Campos: saidas_caixa = o que saiu do caixa (sem crédito); " +
+      "saidas_com_credito = todas as saídas, INCLUSIVE pagamento de fatura, " +
+      "NÃO mede consumo; consumo_mes = o gasto do mês pela data da compra, " +
+      "sem pagamento de fatura e menos a parte dos amigos nos rateios (use " +
+      "este pra 'quanto gastei'); variavel_mes = consumo_mes menos " +
+      "compromissos; saldo = saldo_abertura + variacao_mes (data futura conta " +
+      "nos totais, não no saldo); fatura_deste_mes = compras no crédito do mês " +
+      "anterior que fecham agora; fatura_projetada = compras no crédito deste " +
+      "mês. parcial = mês corrente, futuro = mês ainda não começado; os dois e " +
+      "os meses antes de inicio_dados ficam fora das médias. entradas_proprias e " +
+      "entradas_por_nome = sem rateios; rateios = entrou, saiu e custo_proprio por " +
+      "nome. compromissos / renda_recorrente: com fonte=cadastro, vêm das " +
+      "recorrências que o usuário cadastrou em Finanças (valor fixo ou faixa " +
+      "valor_min/valor_max; valor_tipico = meio da faixa) e o que a heurística " +
+      "acha fora do cadastro vem em sugestoes, fora das contas (vale por " +
+      "direção); com fonte=heuristica, são os nomes presentes em todos os " +
+      `${JANELA_COMPROMISSO} últimos meses completos, até ${MAX_OCORRENCIAS_COMPROMISSO}x por mês ` +
+      "(janela_incompleta no começo dos dados, que usa a janela do primeiro mês " +
+      "com janela cheia: janela_emprestada_de; valor típico = mediana, na renda o " +
+      "mês mais recente). pct_renda em %. sinais = " +
+      "picos de gasto variável (apos_entrada), tickets_repetidos, pontuais " +
+      `(>= ${LIMIAR_PONTUAL} com nome novo, nunca compromisso) e consumo_base (consumo sem pontuais). ` +
+      "ritmo (mês corrente) = variável até hoje contra a média da janela no " +
+      "mesmo dia (desvio_pct); toda média e comparação é sem pontuais, só " +
+      "fechamento_projetado inclui os pontuais já lançados. " +
+      "por_nome (mês único) ou comparativo_por_nome na raiz (intervalo). " +
+      "projecao = os 2 meses seguintes ao atual: livre_para_variavel e " +
+      "livre_por_dia, com detalhe e premissas; com faixa no cadastro, " +
+      "cenarios.pessimista/otimista ao lado do provável. Sem parâmetros, resume o mês atual.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mes: { type: "string", description: "Um mês, YYYY-MM." },
+        de: { type: "string", description: "Primeiro mês de um intervalo, YYYY-MM (use com ate)." },
+        ate: { type: "string", description: "Último mês do intervalo, YYYY-MM (máx. 12 meses)." },
+        incluir_movimentacoes: {
+          type: "boolean",
+          description: "Anexa a cada mês lista_movimentacoes (colunas id, data, nome, valor, direcao, meio, marca; " +
+            "o id serve pro update_movimentacao). Máx. 3 meses. Padrão false.",
+        },
+      },
+    },
+  },
+  {
     name: "search_movimentacoes",
     description:
       "Busca movimentações financeiras do LifeOS por nome, direção " +
       "(Entrada/Saida), meio de pagamento, intervalo de data e faixa de " +
-      "valor. Todos os filtros são opcionais e combináveis.",
+      "valor. Todos os filtros são opcionais e combináveis. Serve pra " +
+      "descer ao detalhe (quais lançamentos, de quê); pra totais e saldo, " +
+      "use resumo_financeiro. Com data_inicio E data_fim, o limite sobe " +
+      "pra 300 -- um mês inteiro cabe numa chamada.",
     inputSchema: {
       type: "object",
       properties: {
@@ -422,7 +620,7 @@ function buildTools() {
         data_fim: { type: "string", description: "Data máxima YYYY-MM-DD (inclusive)." },
         valor_min: { type: "number", description: "Valor mínimo (inclusive)." },
         valor_max: { type: "number", description: "Valor máximo (inclusive)." },
-        limit: { type: "integer", description: "Máximo de resultados (padrão 20, máximo 50)." },
+        limit: { type: "integer", description: "Máximo de resultados (padrão 20; máximo 50, ou 300 com data_inicio e data_fim)." },
       },
     },
   },
@@ -526,7 +724,8 @@ Deno.serve(async (req) => {
       return respond(rpcResult(id, {
         protocolVersion: params?.protocolVersion || "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "lifeos-mcp", version: "2.1.1" },
+        serverInfo: { name: "lifeos-mcp", version: "2.5.0" },
+        instructions: await buildInstructions(REST, restHeaders),
       }));
     }
 
@@ -551,6 +750,15 @@ Deno.serve(async (req) => {
         create_evento: (a) => handleCreateEvento(REST, restHeaders, a),
         update_evento: (a) => handleUpdateEvento(REST, restHeaders, a),
         search_manifestacoes: (a) => handleSearchManifestacoes(REST, restHeaders, a),
+        search_citacoes: (a) => handleSearchCitacoes(REST, restHeaders, a),
+        create_citacao: (a) => handleCreateCitacao(REST, restHeaders, a),
+        list_memorias: (a) => handleListMemorias(REST, restHeaders, a),
+        get_memoria: (a) => handleGetMemoria(REST, restHeaders, a),
+        create_memoria: (a) => handleCreateMemoria(REST, restHeaders, a),
+        add_registro: (a) => handleAddRegistro(REST, restHeaders, a),
+        update_memoria: (a) => handleUpdateMemoria(REST, restHeaders, a),
+        update_registro: (a) => handleUpdateRegistro(REST, restHeaders, a),
+        resumo_financeiro: (a) => handleResumoFinanceiro(REST, restHeaders, a),
         search_movimentacoes: (a) => handleSearchMovimentacoes(REST, restHeaders, a),
         create_movimentacao: (a) => handleCreateMovimentacao(REST, restHeaders, a),
         update_movimentacao: (a) => handleUpdateMovimentacao(REST, restHeaders, a),
@@ -1136,6 +1344,1263 @@ async function handleSearchManifestacoes(REST: string, headers: Record<string, s
   }, null, 2));
 }
 
+// ── Tool: search_citacoes ─────────────────────────────────────────────────
+async function handleSearchCitacoes(REST: string, headers: Record<string, string>, args: Record<string, any>) {
+  const texto = args?.texto ? String(args.texto).trim().toLowerCase() : "";
+  const autor = args?.autor ? String(args.autor).trim().toLowerCase() : "";
+  const limit = clampLimit(args?.limit);
+
+  const r = await fetch(`${REST}/lifeos_citacoes?order=created_at.asc`, { headers });
+  if (!r.ok) throw new Error(`select citacoes -> ${r.status} ${await r.text()}`);
+  const rows = await r.json();
+
+  let citacoes = rows.map((row: any) => ({ id: row.id, texto: row.texto, autor: row.autor }));
+  if (texto) citacoes = citacoes.filter((c: any) => c.texto.toLowerCase().includes(texto));
+  if (autor) citacoes = citacoes.filter((c: any) => c.autor.toLowerCase().includes(autor));
+
+  const totalMatches = citacoes.length;
+  const returned = citacoes.slice(0, limit);
+
+  return toolText(JSON.stringify({
+    total_matches: totalMatches, returned: returned.length, truncated: totalMatches > returned.length, citacoes: returned,
+  }, null, 2));
+}
+
+// ── Tool: create_citacao ──────────────────────────────────────────────────
+// Mesmos limites de lifeos-citacoes (MAX_TEXTO/MAX_AUTOR) -- cópia, não
+// import (ver LIFEOS.md §2).
+async function handleCreateCitacao(REST: string, headers: Record<string, string>, args: Record<string, any>) {
+  const texto = String(args?.texto ?? "").trim();
+  if (!texto) return toolText("O parâmetro texto é obrigatório e não pode ser vazio.", true);
+  if (texto.length > 2000) return toolText("O texto passa de 2000 caracteres -- uma citação precisa ser mais curta.", true);
+  const autor = String(args?.autor ?? "").trim();
+  if (!autor) return toolText("O parâmetro autor (quem disse) é obrigatório e não pode ser vazio.", true);
+  if (autor.length > 200) return toolText("O autor passa de 200 caracteres.", true);
+
+  const insertRes = await fetch(`${REST}/lifeos_citacoes`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "return=representation" },
+    body: JSON.stringify({ texto, autor }),
+  });
+  if (!insertRes.ok) return toolText(`Erro ao criar a citação: ${insertRes.status} ${await insertRes.text()}`, true);
+  const created = (await insertRes.json())[0];
+
+  return toolText(JSON.stringify({
+    ok: true,
+    citacao: { id: created.id, texto: created.texto, autor: created.autor },
+  }, null, 2));
+}
+
+// ── Memória de longo prazo (LIFEOS.md §17) ───────────────────────────────
+//
+// Índice (lifeos_memorias) + registros (lifeos_memoria_registros). Os
+// limites e a regra de título único são os mesmos de lifeos-memorias --
+// cópia, não import (LIFEOS.md §2).
+//
+// Sem DELETE aqui, mesma política do resto do servidor: podar memória é
+// trabalho da tela (lifeos/memoria.html). update_registro é SUBSTITUIÇÃO do
+// texto inteiro, pelo mesmo motivo de update_nota: um envio parcial apagaria
+// o resto do fato.
+const MEM_MAX_TITULO = 120;
+const MEM_MAX_DESCRICAO = 400;
+const MEM_MAX_TEXTO = 8000;
+const MEM_MAX_ORIGEM = 60;
+
+// Teto do índice injetado nas `instructions`. Clientes costumam truncar
+// instruções longas; passando disto, o índice é cortado com um aviso e o
+// modelo usa list_memorias pra ver o resto.
+const INSTRUCTIONS_MAX_INDICE = 6000;
+
+type MemoriaIdx = {
+  id: string; titulo: string; descricao: string; categoria: string;
+  updated_at: string; registros: number;
+};
+
+async function fetchMemoriasIndice(REST: string, headers: Record<string, string>): Promise<MemoriaIdx[]> {
+  // Os ids dos registros vêm embutidos só pra contar -- mais portátil que
+  // depender de aggregate no PostgREST, e o volume é de uso pessoal.
+  const r = await fetch(
+    `${REST}/lifeos_memorias?select=id,titulo,descricao,categoria,updated_at,lifeos_memoria_registros(id)&order=titulo.asc`,
+    { headers },
+  );
+  if (!r.ok) throw new Error(`select memorias -> ${r.status} ${await r.text()}`);
+  const rows = await r.json();
+  return rows.map((m: any) => ({
+    id: m.id, titulo: m.titulo, descricao: m.descricao ?? "", categoria: m.categoria,
+    updated_at: m.updated_at, registros: (m.lifeos_memoria_registros ?? []).length,
+  }));
+}
+
+// Mesmo critério de resolveProjetoNomes: id exato, depois título exato
+// (sem caixa), depois trecho que bata com UMA memória só.
+function resolveMemoria(memorias: MemoriaIdx[], refRaw: string): { hit?: MemoriaIdx; erro?: string } {
+  const ref = refRaw.trim();
+  const lower = ref.toLowerCase();
+  let hit = memorias.find((m) => m.id === ref) ?? memorias.find((m) => m.titulo.trim().toLowerCase() === lower);
+  if (!hit) {
+    const cands = memorias.filter((m) => m.titulo.toLowerCase().includes(lower));
+    if (cands.length === 1) hit = cands[0];
+    else if (cands.length > 1) return { erro: `"${ref}" é ambíguo -- bate com: ${cands.map((m) => m.titulo).join(", ")}.` };
+  }
+  if (!hit) {
+    const todas = memorias.map((m) => m.titulo).join(", ") || "(nenhuma ainda)";
+    return { erro: `Nenhuma memória encontrada com "${ref}". Memórias existentes: ${todas}.` };
+  }
+  return { hit };
+}
+
+function cleanOrigem(v: unknown): string {
+  const s = String(v ?? "").trim().slice(0, MEM_MAX_ORIGEM);
+  return s || "mcp";
+}
+
+async function tocarMemoria(REST: string, headers: Record<string, string>, memoriaId: string) {
+  await fetch(`${REST}/lifeos_memorias?id=eq.${memoriaId}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ updated_at: new Date().toISOString() }),
+  });
+}
+
+// `instructions` do initialize: o cliente coloca isto no system prompt, então
+// o modelo começa a conversa já sabendo quais memórias existem -- sem gastar
+// uma tool call. Falhar aqui nunca derruba o handshake: sem índice, as
+// instruções saem só com o texto fixo.
+async function buildInstructions(REST: string, headers: Record<string, string>): Promise<string> {
+  const base =
+    "LifeOS é o sistema de gestão de vida do usuário (tarefas, projetos, notas, eventos, finanças, " +
+    "manifestações, citações). Este servidor também guarda a MEMÓRIA DE LONGO PRAZO sobre o usuário, " +
+    "independente de cliente ou modelo.\n\n" +
+    "Como usar a memória:\n" +
+    "- O índice abaixo lista cada memória (título — descrição). Quando o assunto da conversa tocar uma " +
+    "delas, abra com get_memoria antes de responder.\n" +
+    "- Ao aprender algo durável sobre o usuário (quem é, preferências, correções que ele fez, contexto " +
+    "de projetos, referências), registre: add_registro na memória certa, ou create_memoria se nenhuma " +
+    "cobre o tema. Informe o parâmetro origem com o nome do seu cliente.\n" +
+    "- Não registre o que é efêmero ou só vale para a conversa atual. Não duplique: se um fato mudou, " +
+    "corrija com update_registro.\n" +
+    "- Cada registro reflete o que era verdade quando foi escrito (veja a data).\n" +
+    "- Este índice foi montado na conexão; use list_memorias para a versão atual.";
+
+  let memorias: MemoriaIdx[];
+  try {
+    memorias = await fetchMemoriasIndice(REST, headers);
+  } catch {
+    return base + "\n\n(Índice de memória indisponível agora -- use list_memorias.)";
+  }
+  if (!memorias.length) return base + "\n\nÍndice de memória: vazio -- nenhuma memória registrada ainda.";
+
+  const ordem = [...VOCAB.memoria_categoria];
+  for (const m of memorias) if (!ordem.includes(m.categoria)) ordem.push(m.categoria);
+
+  let indice = "";
+  let cortado = false;
+  for (const cat of ordem) {
+    const doGrupo = memorias.filter((m) => m.categoria === cat);
+    if (!doGrupo.length) continue;
+    const bloco = `\n[${cat}]\n` + doGrupo
+      .map((m) => `- ${m.titulo}${m.descricao ? " — " + m.descricao : ""} (${m.registros} ${m.registros === 1 ? "registro" : "registros"})`)
+      .join("\n");
+    if (indice.length + bloco.length > INSTRUCTIONS_MAX_INDICE) { cortado = true; break; }
+    indice += bloco;
+  }
+  if (cortado) indice += "\n(… índice cortado por tamanho -- use list_memorias para ver todas.)";
+
+  return base + "\n\nÍndice de memória:" + indice;
+}
+
+// ── Tool: list_memorias ───────────────────────────────────────────────────
+async function handleListMemorias(REST: string, headers: Record<string, string>, args: Record<string, any>) {
+  const categoria = args?.categoria ? String(args.categoria) : "";
+  if (categoria && !VOCAB.memoria_categoria.includes(categoria)) {
+    return toolText(`Categoria inválida: ${categoria}. Valores aceitos: ${VOCAB.memoria_categoria.join(", ")}.`, true);
+  }
+  let memorias = await fetchMemoriasIndice(REST, headers);
+  if (categoria) memorias = memorias.filter((m) => m.categoria === categoria);
+
+  return toolText(JSON.stringify({
+    total: memorias.length,
+    memorias: memorias.map((m) => ({
+      id: m.id, titulo: m.titulo, categoria: m.categoria, descricao: m.descricao,
+      registros: m.registros, atualizada_em: m.updated_at,
+    })),
+  }, null, 2));
+}
+
+// ── Tool: get_memoria ─────────────────────────────────────────────────────
+async function handleGetMemoria(REST: string, headers: Record<string, string>, args: Record<string, any>) {
+  const refs = strArray(args?.memorias).map((s) => s.trim()).filter(Boolean);
+  if (!refs.length) return toolText("O parâmetro memorias é obrigatório -- envie ao menos um título ou id.", true);
+
+  const indice = await fetchMemoriasIndice(REST, headers);
+  const ids: string[] = [];
+  const warnings: string[] = [];
+  for (const ref of refs) {
+    const { hit, erro } = resolveMemoria(indice, ref);
+    if (hit) { if (!ids.includes(hit.id)) ids.push(hit.id); } else warnings.push(erro!);
+  }
+  if (!ids.length) return toolText(warnings.join("\n"), true);
+
+  const r = await fetch(
+    `${REST}/lifeos_memorias?id=in.(${ids.join(",")})&select=*,lifeos_memoria_registros(*)`,
+    { headers },
+  );
+  if (!r.ok) throw new Error(`select memorias -> ${r.status} ${await r.text()}`);
+  const rows = await r.json();
+
+  const memorias = rows.map((m: any) => {
+    const regs = (m.lifeos_memoria_registros ?? []).slice()
+      .sort((a: any, b: any) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+    return {
+      id: m.id, titulo: m.titulo, categoria: m.categoria, descricao: m.descricao ?? "",
+      atualizada_em: m.updated_at,
+      registros: regs.map((x: any) => ({
+        id: x.id, texto: x.texto, origem: x.origem ?? null,
+        data: x.created_at, editado_em: x.updated_at !== x.created_at ? x.updated_at : undefined,
+      })),
+    };
+  });
+
+  return toolText(JSON.stringify({
+    warnings: warnings.length ? warnings : undefined, memorias,
+  }, null, 2));
+}
+
+// ── Tool: create_memoria ──────────────────────────────────────────────────
+async function handleCreateMemoria(REST: string, headers: Record<string, string>, args: Record<string, any>) {
+  const titulo = String(args?.titulo ?? "").trim();
+  if (!titulo) return toolText("O parâmetro titulo é obrigatório e não pode ser vazio.", true);
+  if (titulo.length > MEM_MAX_TITULO) return toolText(`O título passa de ${MEM_MAX_TITULO} caracteres.`, true);
+
+  const descricao = String(args?.descricao ?? "").trim();
+  if (!descricao) return toolText("O parâmetro descricao é obrigatório -- é o que aparece no índice.", true);
+  if (descricao.length > MEM_MAX_DESCRICAO) return toolText(`A descrição passa de ${MEM_MAX_DESCRICAO} caracteres -- ela é um resumo de índice; o conteúdo vai nos registros.`, true);
+
+  const categoria = String(args?.categoria ?? "");
+  if (!VOCAB.memoria_categoria.includes(categoria)) {
+    return toolText(`Categoria inválida: ${categoria}. Valores aceitos: ${VOCAB.memoria_categoria.join(", ")}.`, true);
+  }
+
+  const textos = strArray(args?.registros).map((s) => s.trim()).filter(Boolean);
+  const longo = textos.find((t) => t.length > MEM_MAX_TEXTO);
+  if (longo) return toolText(`Um dos registros passa de ${MEM_MAX_TEXTO} caracteres -- divida em fatos menores.`, true);
+  const origem = cleanOrigem(args?.origem);
+
+  // Checagem amigável antes do insert: o índice único do banco também
+  // barraria, mas aqui dá pra apontar a memória que já existe.
+  const indice = await fetchMemoriasIndice(REST, headers);
+  const existente = indice.find((m) => m.titulo.trim().toLowerCase() === titulo.toLowerCase());
+  if (existente) {
+    return toolText(`Já existe a memória "${existente.titulo}" (id ${existente.id}). Use add_registro para acrescentar a ela.`, true);
+  }
+
+  const insertRes = await fetch(`${REST}/lifeos_memorias`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "return=representation" },
+    body: JSON.stringify({ titulo, descricao, categoria }),
+  });
+  if (!insertRes.ok) return toolText(`Erro ao criar a memória: ${insertRes.status} ${await insertRes.text()}`, true);
+  const created = (await insertRes.json())[0];
+
+  if (textos.length) {
+    const regRes = await fetch(`${REST}/lifeos_memoria_registros`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(textos.map((texto) => ({ memoria_id: created.id, texto, origem }))),
+    });
+    if (!regRes.ok) return toolText(`Memória criada (id ${created.id}), mas falhou ao gravar os registros: ${regRes.status} ${await regRes.text()}`, true);
+  }
+
+  return toolText(JSON.stringify({
+    ok: true,
+    memoria: { id: created.id, titulo: created.titulo, categoria: created.categoria, descricao: created.descricao, registros: textos.length },
+  }, null, 2));
+}
+
+// ── Tool: add_registro ────────────────────────────────────────────────────
+async function handleAddRegistro(REST: string, headers: Record<string, string>, args: Record<string, any>) {
+  const ref = String(args?.memoria ?? "").trim();
+  if (!ref) return toolText("O parâmetro memoria (título ou id) é obrigatório.", true);
+  const texto = String(args?.texto ?? "").trim();
+  if (!texto) return toolText("O parâmetro texto é obrigatório e não pode ser vazio.", true);
+  if (texto.length > MEM_MAX_TEXTO) return toolText(`O texto passa de ${MEM_MAX_TEXTO} caracteres -- divida em registros menores.`, true);
+
+  const { hit, erro } = resolveMemoria(await fetchMemoriasIndice(REST, headers), ref);
+  if (!hit) return toolText(erro!, true);
+
+  const r = await fetch(`${REST}/lifeos_memoria_registros`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "return=representation" },
+    body: JSON.stringify({ memoria_id: hit.id, texto, origem: cleanOrigem(args?.origem) }),
+  });
+  if (!r.ok) return toolText(`Erro ao gravar o registro: ${r.status} ${await r.text()}`, true);
+  const created = (await r.json())[0];
+  await tocarMemoria(REST, headers, hit.id);
+
+  return toolText(JSON.stringify({
+    ok: true,
+    memoria: { id: hit.id, titulo: hit.titulo },
+    registro: { id: created.id, texto: created.texto, origem: created.origem, data: created.created_at },
+  }, null, 2));
+}
+
+// ── Tool: update_memoria (PATCH parcial) ──────────────────────────────────
+async function handleUpdateMemoria(REST: string, headers: Record<string, string>, args: Record<string, any>) {
+  const ref = String(args?.memoria ?? "").trim();
+  if (!ref) return toolText("O parâmetro memoria (título atual ou id) é obrigatório.", true);
+
+  const indice = await fetchMemoriasIndice(REST, headers);
+  const { hit, erro } = resolveMemoria(indice, ref);
+  if (!hit) return toolText(erro!, true);
+
+  const update: Record<string, any> = {};
+  if (args?.titulo !== undefined) {
+    const titulo = String(args.titulo).trim();
+    if (!titulo) return toolText("O parâmetro titulo, quando enviado, não pode ser vazio.", true);
+    if (titulo.length > MEM_MAX_TITULO) return toolText(`O título passa de ${MEM_MAX_TITULO} caracteres.`, true);
+    const outra = indice.find((m) => m.id !== hit.id && m.titulo.trim().toLowerCase() === titulo.toLowerCase());
+    if (outra) return toolText(`Já existe outra memória chamada "${outra.titulo}".`, true);
+    update.titulo = titulo;
+  }
+  if (args?.descricao !== undefined) {
+    const descricao = String(args.descricao).trim();
+    if (descricao.length > MEM_MAX_DESCRICAO) return toolText(`A descrição passa de ${MEM_MAX_DESCRICAO} caracteres.`, true);
+    update.descricao = descricao;
+  }
+  if (args?.categoria !== undefined) {
+    const categoria = String(args.categoria);
+    if (!VOCAB.memoria_categoria.includes(categoria)) {
+      return toolText(`Categoria inválida: ${categoria}. Valores aceitos: ${VOCAB.memoria_categoria.join(", ")}.`, true);
+    }
+    update.categoria = categoria;
+  }
+  if (!Object.keys(update).length) return toolText("Nenhum campo pra atualizar foi enviado -- envie ao menos um de: titulo, descricao, categoria.", true);
+  update.updated_at = new Date().toISOString();
+
+  const r = await fetch(`${REST}/lifeos_memorias?id=eq.${hit.id}`, {
+    method: "PATCH",
+    headers: { ...headers, Prefer: "return=representation" },
+    body: JSON.stringify(update),
+  });
+  if (!r.ok) return toolText(`Erro ao atualizar a memória: ${r.status} ${await r.text()}`, true);
+  const u = (await r.json())[0];
+
+  return toolText(JSON.stringify({
+    ok: true,
+    memoria: { id: u.id, titulo: u.titulo, categoria: u.categoria, descricao: u.descricao, atualizada_em: u.updated_at },
+  }, null, 2));
+}
+
+// ── Tool: update_registro (substituição do texto inteiro) ────────────────
+async function handleUpdateRegistro(REST: string, headers: Record<string, string>, args: Record<string, any>) {
+  const id = String(args?.id ?? "").trim();
+  if (!id) return toolText("O parâmetro id (id do registro, retornado por get_memoria) é obrigatório.", true);
+  const texto = String(args?.texto ?? "").trim();
+  if (!texto) return toolText("O parâmetro texto é obrigatório e precisa ser o TEXTO INTEIRO e final do registro.", true);
+  if (texto.length > MEM_MAX_TEXTO) return toolText(`O texto passa de ${MEM_MAX_TEXTO} caracteres.`, true);
+
+  const r = await fetch(`${REST}/lifeos_memoria_registros?id=eq.${id}`, {
+    method: "PATCH",
+    headers: { ...headers, Prefer: "return=representation" },
+    body: JSON.stringify({ texto, updated_at: new Date().toISOString() }),
+  });
+  if (!r.ok) return toolText(`Erro ao atualizar o registro: ${r.status} ${await r.text()}`, true);
+  const rows = await r.json();
+  if (!rows.length) return toolText(`Nenhum registro encontrado com id ${id}.`, true);
+  const u = rows[0];
+  await tocarMemoria(REST, headers, u.memoria_id);
+
+  return toolText(JSON.stringify({
+    ok: true,
+    registro: { id: u.id, memoria_id: u.memoria_id, texto: u.texto, origem: u.origem, data: u.created_at, editado_em: u.updated_at },
+  }, null, 2));
+}
+
+// ═══ RESUMO FINANCEIRO · início ══════════════════════════════════════════
+//
+// Os números da tela de Finanças (lifeos/financas.html), calculados aqui
+// com as MESMAS regras -- terceira cópia da lógica, junto de financas.js e
+// lifeos.js (LIFEOS.md §2: cópia, não import; decisão do autor, set/2026,
+// até o port pra Laravel). Nomes e comentários seguem financas.js pra
+// facilitar comparar as três lado a lado.
+//
+// Esta seção é PURA: sem fetch, sem Deno, sem VOCAB global -- recebe as
+// linhas e devolve o resumo. É isso que permite verificar a porta rodando
+// as duas implementações sobre os mesmos dados (o teste extrai o trecho
+// entre os marcadores "RESUMO FINANCEIRO · início/fim").
+//
+// Regras (ver o modal "Como funciona" de financas.html):
+//  - Compra em Crédito não sai do caixa no mês: entra em Saídas "com
+//    crédito", fica fora do Saldo e vira fatura futura.
+//  - Saldo = saldo de abertura (RPC lifeos_saldo_abertura) + entradas
+//    realizadas − saídas de caixa realizadas. Data futura conta nos totais,
+//    mas só entra no saldo quando a data chegar.
+//  - Pagamento de fatura = Saida SEM meio com "fatura" no nome. Abate a
+//    fatura que fecha no mês; o excedente vira adiantamento da seguinte,
+//    carregado em cadeia (carryInto). "adiant" no nome = adiantamento
+//    explícito, que pula direto pra próxima fatura.
+//  - A fatura fecha no último dia do mês: compra antes dele cai em M+1; no
+//    último dia, em M+2.
+//
+// Análise (set/2026, criarAnalise no fim da seção): campos ACRESCENTADOS ao
+// resumo -- consumo, rateios, compromissos, sinais, ritmo e projeção. Não
+// mexe em nada de calcularResumoMes. O nome da movimentação É a categoria;
+// finChave junta grafias diferentes da mesma coisa. As constantes abaixo
+// são o ajuste fino da heurística.
+
+// Chave normalizada (sem acento, minúscula, espaços colapsados) -> chave
+// canônica: junta grafias diferentes da mesma coisa. Vazio por padrão;
+// exemplo de uso:
+//   "conta luz": "luz",
+//   "financiamento carro": "carro",
+const ALIASES: Record<string, string> = {};
+// Chaves de compras feitas em nome de outras pessoas (um racha, uma compra
+// coletiva): a Entrada com esse nome é a parte delas (não é renda); o custo
+// próprio é Saída menos Entrada. Vazio por padrão; ex.: ["racha", "vaquinha"].
+const RATEIOS: string[] = [];
+// Primeiro mês com dados de verdade; os anteriores ficam fora de janelas,
+// do lookback de pontuais e das médias (senão entram como zero). null =
+// automático: o primeiro mês com MIN_MOVIMENTACOES_INICIO lançamentos.
+const INICIO_DADOS: string | null = null;
+const MIN_MOVIMENTACOES_INICIO = 20;
+const JANELA_COMPROMISSO = 3;            // meses completos; com menos (mín. 2), janela_incompleta
+const MAX_OCORRENCIAS_COMPROMISSO = 2;   // por mês; acima disso é hábito
+const TOLERANCIA_COMPROMISSO = 0.15;     // variacao_alta fora disso da mediana
+// Chaves (ver finChave) que a heurística erra: forçar vira compromisso
+// mesmo sem aparecer todo mês; ignorar tira da lista.
+const COMPROMISSOS_FORCAR: string[] = [];
+const COMPROMISSOS_IGNORAR: string[] = [];
+const LIMIAR_PONTUAL = 200;
+const MIN_REPETICOES_TICKET = 4;
+const LIMIAR_ENTRADA_GRANDE = 300;
+
+type Mov ={ id?: string; name: string; valor: number; date: string; tipo: string[]; created_at?: string };
+
+function finNum(v: unknown): number { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+function finRound2(v: number): number { return Math.round(v * 100) / 100; }
+function finHas(m: Mov, tag: string) { return Array.isArray(m.tipo) && m.tipo.includes(tag); }
+function finIsSaida(m: Mov) { return finHas(m, "Saida"); }
+function finIsEntrada(m: Mov) { return finHas(m, "Entrada"); }
+function finNextMonth(ym: string) { const [y, m] = ym.split("-").map(Number); return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`; }
+function finPrevMonth(ym: string) { const [y, m] = ym.split("-").map(Number); return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`; }
+function finLastDay(ym: string) { const [y, m] = ym.split("-").map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
+function finFaturaDestino(ym: string, dia: number) { const prox = finNextMonth(ym); return dia < finLastDay(ym) ? prox : finNextMonth(prox); }
+function finCmpByDateAsc(a: Mov, b: Mov) { return (a.date || "").localeCompare(b.date || "") || (a.created_at || "").localeCompare(b.created_at || ""); }
+function finNormName(s: string) { return (s || "").trim().toLowerCase().replace(/\s+/g, " "); }
+
+function finCtx(meios: string[], hojeISO: string) {
+  const hasAnyMeio = (m: Mov) => meios.some((me) => finHas(m, me));
+  const isSaidaCaixa = (m: Mov) => finIsSaida(m) && !finHas(m, "Crédito");
+  const isPagamentoFatura = (m: Mov) => finIsSaida(m) && !hasAnyMeio(m) && /fatura/i.test(m.name || "");
+  const isAdiantamentoExplicito = (m: Mov) => isPagamentoFatura(m) && /adiant/i.test(m.name || "");
+  const isRealizado = (m: Mov) => !m.date || m.date <= hojeISO;
+  return { hasAnyMeio, isSaidaCaixa, isPagamentoFatura, isAdiantamentoExplicito, isRealizado };
+}
+
+// Cópia de financas.js/splitPagamentosFatura -- comparação em CENTAVOS.
+function finSplitPagamentos(pagamentos: Mov[], totalFatura: number) {
+  const sorted = pagamentos.slice().sort(finCmpByDateAsc);
+  const atual: Mov[] = [], adiantamento: Mov[] = [];
+  let cumC = 0;
+  const totalC = Math.round(totalFatura * 100);
+  for (const m of sorted) {
+    const valorC = Math.round(finNum(m.valor) * 100);
+    const restanteC = totalC - cumC;
+    if (restanteC <= 0) adiantamento.push(m);
+    else if (valorC > restanteC) {
+      atual.push({ ...m, valor: restanteC / 100 });
+      adiantamento.push({ ...m, valor: (valorC - restanteC) / 100 });
+    } else atual.push(m);
+    cumC += valorC;
+  }
+  return { atual, adiantamento };
+}
+
+// Cópia de financas.js/calcularProjecaoFatura.
+function finProjecaoFatura(rows: Mov[], ym: string) {
+  const groups: Record<string, { total: number; rows: Mov[] }> = {};
+  for (const m of rows) {
+    if (!finIsSaida(m) || !finHas(m, "Crédito")) continue;
+    if (/fatura/i.test(m.name || "")) continue; // pagamento da fatura, não compra nova
+    const d = m.date ? parseInt(m.date.slice(8, 10), 10) : 0;
+    const destino = finFaturaDestino(ym, d);
+    (groups[destino] ??= { total: 0, rows: [] });
+    groups[destino].total += finNum(m.valor);
+    groups[destino].rows.push(m);
+  }
+  return groups;
+}
+
+// Resumo de UM mês. `rowsDoMes(ym)` devolve as movimentações de qualquer
+// mês (a cadeia de faturas olha pra trás); `abertura` vem da RPC.
+function calcularResumoMes(
+  rowsDoMes: (ym: string) => Mov[], ym: string, abertura: number, hojeISO: string, meios: string[],
+) {
+  const c = finCtx(meios, hojeISO);
+  const MROWS = rowsDoMes(ym);
+
+  // KPIs -- cópia de computeMonthKpis.
+  let entradas = 0, saidasTotais = 0, entradasRealizadas = 0, saidasCaixaRealizadas = 0, futuras = 0;
+  for (const m of MROWS) {
+    const v = finNum(m.valor), realizado = c.isRealizado(m);
+    if (!realizado) futuras++;
+    if (finIsEntrada(m)) { entradas += v; if (realizado) entradasRealizadas += v; }
+    if (finIsSaida(m)) saidasTotais += v;
+    if (c.isSaidaCaixa(m) && realizado) saidasCaixaRealizadas += v;
+  }
+  const variacaoMes = entradasRealizadas - saidasCaixaRealizadas;
+
+  // Por meio -- cópia de computeDonutBuckets (modos saida e entrada).
+  const porMeio = (dir: (m: Mov) => boolean) => {
+    const out: Record<string, number> = {};
+    let semMeio = 0;
+    for (const m of MROWS) {
+      if (!dir(m)) continue;
+      const v = finNum(m.valor);
+      let achou = false;
+      for (const me of meios) if (finHas(m, me)) { out[me] = (out[me] || 0) + v; achou = true; }
+      if (!achou) semMeio += v;
+    }
+    if (semMeio > 0) out["Sem meio"] = semMeio;
+    for (const k of Object.keys(out)) out[k] = finRound2(out[k]);
+    return out;
+  };
+
+  // Saldo acumulado dia a dia -- cópia de renderSaldo; aqui só o mínimo.
+  const porDia: Record<string, number> = {};
+  for (const m of MROWS) {
+    if (!c.isRealizado(m)) continue;
+    let delta = 0;
+    if (finIsEntrada(m)) delta += finNum(m.valor);
+    if (c.isSaidaCaixa(m)) delta -= finNum(m.valor);
+    porDia[m.date] = (porDia[m.date] || 0) + delta;
+  }
+  let acc = abertura, saldoMinimo: { valor: number; dia: string | null } = { valor: abertura, dia: null };
+  for (const d of Object.keys(porDia).sort()) {
+    acc += porDia[d];
+    if (acc < saldoMinimo.valor) saldoMinimo = { valor: acc, dia: d };
+  }
+
+  // Cadeia de faturas -- cópia de carryInto (síncrona: os dados já estão
+  // todos em memória; memo por mês no lugar do cache de fetch).
+  const memo: Record<string, Mov[]> = {};
+  const carryInto = (m: string): Mov[] => {
+    if (memo[m]) return memo[m];
+    const rows = rowsDoMes(m);
+    const pagamentosFatura = rows.filter(c.isPagamentoFatura);
+    let res: Mov[];
+    if (!pagamentosFatura.length) res = [];
+    else {
+      const explicitos = pagamentosFatura.filter(c.isAdiantamentoExplicito);
+      const normais = pagamentosFatura.filter((x) => !c.isAdiantamentoExplicito(x));
+      if (!normais.length) res = explicitos;
+      else {
+        const pm = finPrevMonth(m);
+        const g = finProjecaoFatura(rowsDoMes(pm), pm)[m];
+        const totalFaturaM = (g && g.rows.length) ? g.total : 0;
+        const split = finSplitPagamentos(normais.concat(carryInto(pm)), totalFaturaM);
+        res = split.adiantamento.concat(explicitos);
+      }
+    }
+    return (memo[m] = res);
+  };
+
+  // Fatura deste mês -- cópia de renderFaturaMesPassado.
+  const pYm = finPrevMonth(ym);
+  const pagamentosFaturaAtual = MROWS.filter(c.isPagamentoFatura);
+  const explicitosAtual = pagamentosFaturaAtual.filter(c.isAdiantamentoExplicito);
+  const normaisAtual = pagamentosFaturaAtual.filter((m) => !c.isAdiantamentoExplicito(m));
+  const gAtual = finProjecaoFatura(rowsDoMes(pYm), pYm)[ym];
+  const totalFatura = (gAtual && gAtual.rows.length) ? gAtual.total : 0;
+  const pagamentosFatura = normaisAtual.concat(carryInto(pYm));
+  const pago = pagamentosFatura.reduce((s, m) => s + finNum(m.valor), 0);
+  const split = finSplitPagamentos(pagamentosFatura, totalFatura);
+  const carryOut = split.adiantamento.concat(explicitosAtual);
+  const excedente = finRound2(carryOut.reduce((s, m) => s + finNum(m.valor), 0));
+
+  // Fatura projetada -- cópia de renderFaturaProjetada + nota de adiantamento
+  // (o adiantamento abate só o PRIMEIRO destino, como na tela).
+  const proj = finProjecaoFatura(MROWS, ym);
+  const faturaProjetada = Object.keys(proj).sort().map((dest, i) => ({
+    fatura: dest,
+    total: finRound2(proj[dest].total),
+    compras: proj[dest].rows.length,
+    ...(i === 0 && excedente > 0 ? { valor_apos_adiantamento: finRound2(Math.max(0, proj[dest].total - excedente)) } : {}),
+  }));
+
+  // Recorrências -- cópia de renderRecList (sem filtros), só as que repetem.
+  const grupos: Record<string, { descricao: string; items: Mov[] }> = {};
+  for (const m of MROWS) {
+    const key = finNormName(m.name) || "—";
+    (grupos[key] ??= { descricao: m.name || "—", items: [] }).items.push(m);
+  }
+  const recorrencias = Object.values(grupos).map((g) => {
+    let e = 0, s = 0;
+    for (const m of g.items) { if (finIsEntrada(m)) e += finNum(m.valor); if (finIsSaida(m)) s += finNum(m.valor); }
+    return { descricao: g.descricao, vezes: g.items.length, entradas: finRound2(e), saidas: finRound2(s), liquido: finRound2(e - s) };
+  })
+    .sort((a, b) => (b.vezes - a.vezes) || (Math.abs(b.liquido) - Math.abs(a.liquido)))
+    .filter((g) => g.vezes > 1);
+
+  const maioresSaidas = MROWS.filter(finIsSaida)
+    .sort((a, b) => finNum(b.valor) - finNum(a.valor)).slice(0, 5)
+    .map((m) => ({ data: m.date, descricao: m.name, valor: finRound2(finNum(m.valor)), meio: meios.filter((me) => finHas(m, me)) }));
+
+  return {
+    mes: ym,
+    movimentacoes: MROWS.length,
+    lancamentos_futuros: futuras,
+    entradas: finRound2(entradas),
+    saidas_caixa: finRound2(saidasCaixaRealizadas),
+    saidas_com_credito: finRound2(saidasTotais),
+    saldo_abertura: finRound2(abertura),
+    variacao_mes: finRound2(variacaoMes),
+    saldo: finRound2(abertura + variacaoMes),
+    saldo_minimo: { valor: finRound2(saldoMinimo.valor), dia: saldoMinimo.dia },
+    saidas_por_meio: porMeio(finIsSaida),
+    entradas_por_meio: porMeio(finIsEntrada),
+    fatura_deste_mes: {
+      compras_de: pYm,
+      total: finRound2(totalFatura),
+      compras: gAtual ? gAtual.rows.length : 0,
+      pago: finRound2(Math.min(pago, totalFatura)),
+      pagamentos: split.atual.length,
+      restante: finRound2(Math.max(0, totalFatura - pago)),
+      quitada: totalFatura > 0 && finRound2(Math.max(0, totalFatura - pago)) <= 0,
+      adiantamento_para_proxima: excedente,
+    },
+    fatura_projetada: faturaProjetada,
+    recorrencias: recorrencias.slice(0, 8),
+    maiores_saidas: maioresSaidas,
+  };
+}
+
+// ── Análise ──────────────────────────────────────────────────────────────
+
+function finChave(nome: string): string {
+  const k = (nome || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().trim().replace(/\s+/g, " ");
+  return ALIASES[k] ?? k;
+}
+function finMeioStr(m: Mov, meios: string[]): string | null {
+  const ms = meios.filter((me) => finHas(m, me));
+  return ms.length ? ms.join("+") : null;
+}
+function finMediana(xs: number[]): number {
+  if (!xs.length) return 0;
+  const s = xs.slice().sort((a, b) => a - b), h = Math.floor(s.length / 2);
+  return s.length % 2 ? s[h] : (s[h - 1] + s[h]) / 2;
+}
+function finDia(m: Mov) { return m.date ? parseInt(m.date.slice(8, 10), 10) : 0; }
+function finSomaDias(iso: string, n: number) {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function finSoma(xs: number[]) { return xs.reduce((s, x) => s + x, 0); }
+
+type Recorrente = {
+  chave: string; nome: string; valor_tipico: number; valor_min?: number; valor_max?: number;
+  dia_tipico: number | null; meio_tipico: string | null;
+  variacao_alta: boolean; ja_lancado: boolean; valor_lancado: number; origem: string;
+};
+// Linha ativa de lifeos_recorrencias (cadastro em Finanças → Recorrências
+// previstas; ver FINANCAS.md §9.2).
+type Cadastrada = { nome: string; direcao: string; valor_min: number; valor_max: number; meio: string | null; dia: number | null };
+
+// `todas` = todas as linhas lidas (o início dos dados, a grafia de exibição e
+// as entradas grandes olham além dos meses pedidos). Um mês é "completo"
+// quando já terminou e não é anterior ao início dos dados; o corrente
+// (parcial) e os futuros ficam fora de médias e janelas.
+function criarAnalise(
+  rowsDoMes: (ym: string) => Mov[], todas: Mov[], hojeISO: string, meios: string[], cadastradas: Cadastrada[] = [],
+) {
+  const mesHoje = hojeISO.slice(0, 7);
+  const diaHoje = parseInt(hojeISO.slice(8, 10), 10);
+  const c = finCtx(meios, hojeISO);
+  // Pela chave, e não por isPagamentoFatura: existe "Fatura " com espaço, e
+  // um pagamento lançado com meio por engano também não é consumo.
+  const ehFatura = (m: Mov) => finIsSaida(m) && finChave(m.name).includes("fatura");
+  const ehRateio = (m: Mov) => RATEIOS.includes(finChave(m.name));
+  const r2 = finRound2;
+
+  // Cadastro por direção, uma linha por chave (dois nomes que viram a mesma
+  // chave pelos ALIASES contariam em dobro: vale o primeiro).
+  const cadastroPorDirecao: Record<string, Cadastrada[]> = { Entrada: [], Saida: [] };
+  for (const c of cadastradas) {
+    const lista = cadastroPorDirecao[c.direcao];
+    if (!lista || lista.some((x) => finChave(x.nome) === finChave(c.nome))) continue;
+    lista.push(c);
+  }
+
+  const porMesQtd: Record<string, number> = {};
+  for (const m of todas) { const ym = (m.date || "").slice(0, 7); porMesQtd[ym] = (porMesQtd[ym] || 0) + 1; }
+  const inicio = INICIO_DADOS
+    ?? Object.keys(porMesQtd).sort().find((ym) => porMesQtd[ym] >= MIN_MOVIMENTACOES_INICIO)
+    ?? mesHoje;
+  const completo = (ym: string) => ym >= inicio && ym < mesHoje;
+
+  const grafias: Record<string, Record<string, number>> = {};
+  for (const m of todas) {
+    const g = (m.name || "").trim(), k = finChave(m.name);
+    const gs = (grafias[k] ??= {});
+    gs[g] = (gs[g] || 0) + 1;
+  }
+  const nomes: Record<string, string> = {};
+  const nomeDe = (k: string) =>
+    nomes[k] ??= (Object.entries(grafias[k] ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? k);
+
+  const entradasGrandes = todas.filter((m) => finIsEntrada(m) && !ehRateio(m) && finNum(m.valor) >= LIMIAR_ENTRADA_GRANDE);
+
+  // Os JANELA_COMPROMISSO meses completos mais recentes até ym; perto do
+  // início dos dados, os que houver.
+  const janela = (ym: string) => {
+    const out: string[] = [];
+    let m = ym < mesHoje ? ym : finPrevMonth(mesHoje);
+    for (let i = 0; i < JANELA_COMPROMISSO && m >= inicio; i++) { out.unshift(m); m = finPrevMonth(m); }
+    return out;
+  };
+
+  const consumoMes = (ym: string) => {
+    let s = 0;
+    for (const m of rowsDoMes(ym)) {
+      if (finIsSaida(m) && !ehFatura(m)) s += finNum(m.valor);
+      else if (finIsEntrada(m) && ehRateio(m)) s -= finNum(m.valor);
+    }
+    return s;
+  };
+
+  // Gasto variável acumulado até o dia `dia`: consumo sem os compromissos.
+  // `semPontuais` é pras médias: um conserto de 1600 não é ritmo.
+  const variavelAte = (ym: string, dia: number, comp: Set<string>, semPontuais = false) => {
+    const fora = semPontuais ? new Set(pontuaisDe(ym)) : null;
+    let s = 0;
+    for (const m of rowsDoMes(ym)) {
+      if (finDia(m) > dia || fora?.has(m)) continue;
+      if (finIsSaida(m) && !ehFatura(m) && !comp.has(finChave(m.name))) s += finNum(m.valor);
+      else if (finIsEntrada(m) && ehRateio(m)) s -= finNum(m.valor);
+    }
+    return s;
+  };
+
+  // Primeiro mês com janela cheia. Mês cuja janela própria é incompleta
+  // (começo dos dados) usa a janela dele: com 2 meses a heurística pega
+  // coincidência (uma multa em dois meses seguidos), com 1 não pega nada.
+  let primeiroCheio: string | null = null;
+  for (let m = inicio; m < mesHoje; m = finNextMonth(m)) {
+    if (janela(m).length === JANELA_COMPROMISSO) { primeiroCheio = m; break; }
+  }
+
+  // Compromissos (saídas) ou renda recorrente (entradas) vistos de ym: chave
+  // presente em TODOS os meses da janela, no máximo N vezes por mês. Sem
+  // janela cheia pra emprestar, usa a que houver; com menos de 2 meses, a
+  // heurística não se sustenta e a lista sai vazia. ja_lancado/valor_lancado
+  // são sempre do próprio ym.
+  const recMemo: Record<string, {
+    itens: Recorrente[]; total: number; total_min?: number; total_max?: number;
+    fonte: string; sugestoes?: Omit<Recorrente, "chave">[];
+    janela: string[]; janela_incompleta: boolean; janela_emprestada_de: string | null;
+  }> = {};
+  const recorrentes = (ym: string, entrada: boolean) => {
+    const memoKey = ym + (entrada ? "E" : "S");
+    if (recMemo[memoKey]) return recMemo[memoKey];
+    const propria = janela(ym);
+    const incompleta = propria.length < JANELA_COMPROMISSO;
+    const emprestada = incompleta ? primeiroCheio : null;
+    const jan = emprestada ? janela(emprestada) : propria;
+    const elegivel = (m: Mov) => (entrada ? finIsEntrada(m) : finIsSaida(m)) && !ehFatura(m) && !ehRateio(m);
+    const st: Record<string, { meses: Record<string, { qtd: number; soma: number }>; dias: number[]; meios: Record<string, number> }> = {};
+    for (const j of jan) for (const m of rowsDoMes(j)) {
+      if (!elegivel(m)) continue;
+      const s = (st[finChave(m.name)] ??= { meses: {}, dias: [], meios: {} });
+      const sm = (s.meses[j] ??= { qtd: 0, soma: 0 });
+      sm.qtd++; sm.soma += finNum(m.valor);
+      s.dias.push(finDia(m));
+      const me = finMeioStr(m, meios) ?? "";
+      s.meios[me] = (s.meios[me] || 0) + 1;
+    }
+    const lancado: Record<string, number> = {};
+    for (const m of rowsDoMes(ym)) if (elegivel(m)) {
+      const k = finChave(m.name);
+      lancado[k] = (lancado[k] || 0) + finNum(m.valor);
+    }
+    let chaves = jan.length < 2 ? [] : Object.keys(st).filter((k) =>
+      jan.every((j) => st[k].meses[j] && st[k].meses[j].qtd <= MAX_OCORRENCIAS_COMPROMISSO));
+    if (!entrada && jan.length >= 2) {
+      // Forçado sem nenhuma ocorrência na janela não tem valor típico: fica de fora.
+      for (const k of COMPROMISSOS_FORCAR) if (st[k] && !chaves.includes(k)) chaves.push(k);
+      chaves = chaves.filter((k) => !COMPROMISSOS_IGNORAR.includes(k));
+    }
+    const somasDe = (k: string) => st[k] ? jan.filter((j) => st[k].meses[j]).map((j) => st[k].meses[j].soma) : [];
+    const meioHist = (k: string) => st[k] ? (Object.entries(st[k].meios).sort((a, b) => b[1] - a[1])[0][0] || null) : null;
+    const diaHist = (k: string) => st[k] ? Math.round(finMediana(st[k].dias)) : null;
+    const heuristica: Recorrente[] = chaves.map((k) => {
+      const somas = somasDe(k);
+      // Renda muda em degrau (reajuste), não oscila: vale o mês mais recente.
+      // Compromisso oscila (luz, aluguel com condomínio): vale a mediana.
+      const tipico = entrada ? somas[somas.length - 1] : finMediana(somas);
+      return {
+        chave: k,
+        nome: nomeDe(k),
+        valor_tipico: r2(tipico),
+        dia_tipico: diaHist(k),
+        meio_tipico: meioHist(k),
+        variacao_alta: somas.some((x) => Math.abs(x - tipico) > TOLERANCIA_COMPROMISSO * tipico),
+        ja_lancado: k in lancado,
+        valor_lancado: r2(lancado[k] ?? 0),
+        origem: "heuristica",
+      };
+    }).sort((a, b) => b.valor_tipico - a.valor_tipico);
+
+    // Cadastro manda, por direção: com pelo menos uma recorrência ativa
+    // nessa direção, os itens são só os cadastrados e a heurística vira
+    // sugestão (o que ela acha e não está cadastrado). Valor típico = meio da
+    // faixa; meio e dia não informados vêm do histórico.
+    const cad = cadastroPorDirecao[entrada ? "Entrada" : "Saida"];
+    let itens = heuristica, sugestoes: Omit<Recorrente, "chave">[] | undefined;
+    if (cad.length) {
+      itens = cad.map((c) => {
+        const k = finChave(c.nome), somas = somasDe(k);
+        const min = c.valor_min, max = c.valor_max;
+        return {
+          chave: k,
+          nome: c.nome,
+          valor_tipico: r2((min + max) / 2),
+          valor_min: r2(min),
+          valor_max: r2(max),
+          dia_tipico: c.dia ?? diaHist(k),
+          meio_tipico: c.meio ?? meioHist(k),
+          // Algum mês da janela fora da faixa cadastrada (com a tolerância).
+          variacao_alta: somas.some((x) => x < min * (1 - TOLERANCIA_COMPROMISSO) || x > max * (1 + TOLERANCIA_COMPROMISSO)),
+          ja_lancado: k in lancado,
+          valor_lancado: r2(lancado[k] ?? 0),
+          origem: "cadastro",
+        };
+      }).sort((a, b) => b.valor_tipico - a.valor_tipico);
+      const cadChaves = new Set(itens.map((i) => i.chave));
+      sugestoes = heuristica.filter((i) => !cadChaves.has(i.chave)).map(semChave);
+    }
+    return (recMemo[memoKey] = {
+      itens, total: r2(finSoma(itens.map((i) => i.valor_tipico))),
+      ...(cad.length ? {
+        total_min: r2(finSoma(itens.map((i) => i.valor_min ?? i.valor_tipico))),
+        total_max: r2(finSoma(itens.map((i) => i.valor_max ?? i.valor_tipico))),
+      } : {}),
+      fonte: cad.length ? "cadastro" : "heuristica",
+      sugestoes,
+      janela: jan, janela_incompleta: incompleta, janela_emprestada_de: emprestada,
+    });
+  };
+  const semChave = (i: Recorrente) => { const { chave: _, ...rest } = i; return rest; };
+  const ehCredito = (i: Recorrente) => (i.meio_tipico ?? "").split("+").includes("Crédito");
+
+  // Pontuais: saída grande cujo nome não aparece nos 3 meses anteriores
+  // (dentro dos dados). Perto do início dos dados a referência é completada
+  // com os meses completos seguintes; senão todo gasto do primeiro mês seria
+  // "novo". Compromisso (inclusive forçado) nunca é pontual.
+  const pontMemo: Record<string, Mov[]> = {};
+  const pontuaisDe = (ym: string): Mov[] => {
+    if (pontMemo[ym]) return pontMemo[ym];
+    const comp = new Set(recorrentes(ym, false).itens.map((i) => i.chave));
+    const ref: string[] = [];
+    for (let p = finPrevMonth(ym); ref.length < 3 && p >= inicio; p = finPrevMonth(p)) ref.push(p);
+    for (let p = finNextMonth(ym); ref.length < 3 && completo(p); p = finNextMonth(p)) ref.push(p);
+    const vistas = new Set<string>();
+    for (const p of ref) for (const m of rowsDoMes(p)) vistas.add(finChave(m.name));
+    return (pontMemo[ym] = rowsDoMes(ym).filter((m) => {
+      const k = finChave(m.name);
+      return finIsSaida(m) && !ehFatura(m) && !ehRateio(m) && !comp.has(k)
+        && finNum(m.valor) >= LIMIAR_PONTUAL && !vistas.has(k);
+    }));
+  };
+  // Variável médio por dia nos meses da janela, sem os pontuais de cada mês.
+  const mediaDiariaJanela = (jan: string[], comp: Set<string>) =>
+    jan.length ? finSoma(jan.map((j) => variavelAte(j, 31, comp, true))) / finSoma(jan.map(finLastDay)) : 0;
+
+  const analisarMes = (ym: string, opts: { porNome: boolean; lista: boolean }) => {
+    const rows = rowsDoMes(ym);
+    const comp = recorrentes(ym, false), renda = recorrentes(ym, true);
+    const setComp = new Set(comp.itens.map((i) => i.chave));
+    const consumo = consumoMes(ym);
+
+    // Rateios e entradas próprias.
+    const rateiosK: Record<string, { entrou: number; saiu: number }> = {};
+    const entradasK: Record<string, number> = {};
+    let entradas = 0, entradasRateio = 0;
+    for (const m of rows) {
+      const v = finNum(m.valor), k = finChave(m.name);
+      if (finIsEntrada(m)) entradas += v;
+      if (ehRateio(m)) {
+        const r = (rateiosK[k] ??= { entrou: 0, saiu: 0 });
+        if (finIsEntrada(m)) { r.entrou += v; entradasRateio += v; }
+        if (finIsSaida(m)) r.saiu += v;
+      } else if (finIsEntrada(m)) entradasK[k] = (entradasK[k] || 0) + v;
+    }
+    const rateios: Record<string, { entrou: number; saiu: number; custo_proprio: number }> = {};
+    for (const [k, r] of Object.entries(rateiosK)) rateios[nomeDe(k)] = { entrou: r2(r.entrou), saiu: r2(r.saiu), custo_proprio: r2(r.saiu - r.entrou) };
+    const entradasPorNome: Record<string, number> = {};
+    for (const [k, v] of Object.entries(entradasK).sort((a, b) => b[1] - a[1])) entradasPorNome[nomeDe(k)] = r2(v);
+
+    // Por nome (só no modo mês único).
+    let porNome;
+    if (opts.porNome) {
+      const g: Record<string, { e: number; s: number; qe: number; qs: number; meios: Set<string> }> = {};
+      for (const m of rows) {
+        if (ehFatura(m)) continue;
+        const x = (g[finChave(m.name)] ??= { e: 0, s: 0, qe: 0, qs: 0, meios: new Set() });
+        const v = finNum(m.valor);
+        if (finIsEntrada(m)) { x.e += v; x.qe++; }
+        if (finIsSaida(m)) { x.s += v; x.qs++; }
+        for (const me of meios) if (finHas(m, me)) x.meios.add(me);
+      }
+      porNome = Object.entries(g).map(([k, x]) => ({
+        nome: nomeDe(k), entradas: r2(x.e), saidas: r2(x.s), liquido: r2(x.e - x.s),
+        qtd_entradas: x.qe, qtd_saidas: x.qs,
+        ticket_medio: x.qs ? r2(x.s / x.qs) : null, meios: [...x.meios],
+      })).sort((a, b) => (b.saidas - a.saidas) || (b.entradas - a.entradas));
+    }
+
+    // Sinais.
+    const ehVariavel = (m: Mov) => finIsSaida(m) && !ehFatura(m) && !ehRateio(m) && !setComp.has(finChave(m.name));
+    const dias: Record<string, { total: number; itens: { nome: string; valor: number }[] }> = {};
+    for (const m of rows) if (ehVariavel(m)) {
+      const d = (dias[m.date] ??= { total: 0, itens: [] });
+      d.total += finNum(m.valor);
+      d.itens.push({ nome: (m.name || "").trim(), valor: r2(finNum(m.valor)) });
+    }
+    const picos = Object.entries(dias).sort((a, b) => b[1].total - a[1].total).slice(0, 5).map(([data, d]) => ({
+      data, total: r2(d.total), itens: d.itens.sort((a, b) => b.valor - a.valor),
+      apos_entrada: entradasGrandes.some((e) => e.date >= finSomaDias(data, -2) && e.date <= data),
+    }));
+    const tickets: Record<string, { k: string; valor: number; vezes: number }> = {};
+    for (const m of rows) if (finIsSaida(m) && !ehFatura(m)) {
+      const k = finChave(m.name), id = k + "|" + Math.round(finNum(m.valor) * 100);
+      (tickets[id] ??= { k, valor: finNum(m.valor), vezes: 0 }).vezes++;
+    }
+    const ticketsRepetidos = Object.values(tickets).filter((t) => t.vezes >= MIN_REPETICOES_TICKET)
+      .map((t) => ({ nome: nomeDe(t.k), valor: r2(t.valor), vezes: t.vezes, total: r2(t.valor * t.vezes) }))
+      .sort((a, b) => (b.vezes - a.vezes) || (b.total - a.total));
+    const pontuais = pontuaisDe(ym).map((m) => ({ data: m.date, nome: (m.name || "").trim(), valor: r2(finNum(m.valor)) }));
+
+    // Ritmo (só no mês corrente). Toda média e comparação é sem pontuais;
+    // só fechamento_projetado inclui os pontuais já lançados (é dinheiro que
+    // já saiu).
+    let ritmo;
+    if (ym === mesHoje) {
+      const jan = janela(ym), diasNoMes = finLastDay(ym);
+      const ate = variavelAte(ym, diaHoje, setComp);
+      const ateSem = variavelAte(ym, diaHoje, setComp, true);
+      const mediaDiaria = ateSem / diaHoje;
+      const mesmoDia = jan.length
+        ? finSoma(jan.map((j) => variavelAte(j, Math.min(diaHoje, finLastDay(j)), setComp, true))) / jan.length
+        : null;
+      ritmo = {
+        dias_decorridos: diaHoje,
+        dias_no_mes: diasNoMes,
+        variavel_ate_hoje: r2(ate),
+        variavel_ate_hoje_sem_pontuais: r2(ateSem),
+        media_mesmo_dia: mesmoDia !== null ? r2(mesmoDia) : null,
+        desvio_pct: mesmoDia ? Math.round((ateSem - mesmoDia) / mesmoDia * 1000) / 10 : null,
+        media_diaria: r2(mediaDiaria),
+        media_diaria_janela: jan.length ? r2(mediaDiariaJanela(jan, setComp)) : null,
+        media_mes_janela_sem_pontuais: jan.length
+          ? r2(finSoma(jan.map((j) => variavelAte(j, 31, setComp, true))) / jan.length)
+          : null,
+        fechamento_projetado: r2(ate + mediaDiaria * (diasNoMes - diaHoje)),
+        fechamento_sem_pontuais: r2(mediaDiaria * diasNoMes),
+      };
+    }
+
+    let lista;
+    if (opts.lista) {
+      lista = {
+        colunas: ["id", "data", "nome", "valor", "direcao", "meio", "marca"],
+        linhas: rows.slice().sort(finCmpByDateAsc).map((m) => [
+          m.id ?? null, m.date, m.name, r2(finNum(m.valor)),
+          finIsEntrada(m) ? "Entrada" : finIsSaida(m) ? "Saida" : null,
+          finMeioStr(m, meios),
+          ehFatura(m) ? "fatura"
+            : ehRateio(m) ? "rateio"
+            : finIsSaida(m) && setComp.has(finChave(m.name)) ? "compromisso"
+            : !c.isRealizado(m) ? "futuro"
+            : null,
+        ]),
+      };
+    }
+
+    return {
+      parcial: ym === mesHoje,
+      futuro: ym > mesHoje,
+      consumo_mes: r2(consumo),
+      variavel_mes: r2(variavelAte(ym, 31, setComp)),
+      entradas_proprias: r2(entradas - entradasRateio),
+      entradas_por_nome: entradasPorNome,
+      rateios,
+      ...(porNome ? { por_nome: porNome } : {}),
+      compromissos: {
+        fonte: comp.fonte,
+        total: comp.total,
+        ...(comp.total_min !== undefined ? { total_min: comp.total_min, total_max: comp.total_max } : {}),
+        pct_renda: renda.total > 0 ? r2(comp.total / renda.total * 100) : null,
+        janela: comp.janela,
+        janela_incompleta: comp.janela_incompleta,
+        janela_emprestada_de: comp.janela_emprestada_de,
+        itens: comp.itens.map(semChave),
+        ...(comp.sugestoes ? { sugestoes: comp.sugestoes } : {}),
+      },
+      renda_recorrente: {
+        fonte: renda.fonte,
+        total: renda.total,
+        ...(renda.total_min !== undefined ? { total_min: renda.total_min, total_max: renda.total_max } : {}),
+        itens: renda.itens.map(semChave),
+        ...(renda.sugestoes ? { sugestoes: renda.sugestoes } : {}),
+      },
+      sinais: {
+        picos,
+        tickets_repetidos: ticketsRepetidos,
+        pontuais,
+        consumo_base: r2(consumo - finSoma(pontuais.map((p) => p.valor))),
+      },
+      ...(ritmo ? { ritmo } : {}),
+      ...(lista ? { lista_movimentacoes: lista } : {}),
+    };
+  };
+
+  // Uma linha por (nome, direção); média só dos meses completos.
+  const comparativoPorNome = (meses: string[]) => {
+    const acc: Record<string, { k: string; dir: string; v: Record<string, number> }> = {};
+    for (const ym of meses) for (const m of rowsDoMes(ym)) {
+      if (ehFatura(m)) continue;
+      const dir = finIsEntrada(m) ? "Entrada" : finIsSaida(m) ? "Saida" : null;
+      if (!dir) continue;
+      const k = finChave(m.name);
+      const a = (acc[k + "|" + dir] ??= { k, dir, v: {} });
+      a.v[ym] = (a.v[ym] || 0) + finNum(m.valor);
+    }
+    const comps = meses.filter(completo);
+    return Object.values(acc).map((a) => {
+      const valores: Record<string, number> = {};
+      for (const ym of meses) valores[ym] = r2(a.v[ym] ?? 0);
+      return {
+        nome: nomeDe(a.k), direcao: a.dir, valores,
+        media: comps.length ? r2(finSoma(comps.map((ym) => a.v[ym] ?? 0)) / comps.length) : null,
+      };
+    }).sort((a, b) => ((b.media ?? -1) - (a.media ?? -1)));
+  };
+
+  // Os 2 meses seguintes ao corrente. Lançado (inclusive com data futura)
+  // substitui o típico, nunca soma.
+  const projecao = (aberturaHoje: number) => {
+    const comp = recorrentes(mesHoje, false), renda = recorrentes(mesHoje, true);
+    const setComp = new Set(comp.itens.map((i) => i.chave));
+    const lancadoEm = (ym: string, i: Recorrente, entrada: boolean) => {
+      let soma = 0, achou = false;
+      for (const m of rowsDoMes(ym)) {
+        if (!(entrada ? finIsEntrada(m) : finIsSaida(m)) || ehFatura(m) || finChave(m.name) !== i.chave) continue;
+        soma += finNum(m.valor); achou = true;
+      }
+      return achou ? soma : null;
+    };
+
+    // Saldo estimado no fim do mês corrente.
+    const rHoje = calcularResumoMes(rowsDoMes, mesHoje, aberturaHoje, hojeISO, meios);
+    let futuros = 0;
+    for (const m of rowsDoMes(mesHoje)) {
+      if (c.isRealizado(m)) continue;
+      if (finIsEntrada(m)) futuros += finNum(m.valor);
+      if (c.isSaidaCaixa(m)) futuros -= finNum(m.valor);
+    }
+    // Cenários: com faixa cadastrada, o pessimista usa a saída no máximo e a
+    // entrada no mínimo; o otimista, o contrário; o provável, o meio da faixa
+    // (valor_tipico). Sem faixa os três coincidem. Lançado vale nos três.
+    type Cenario = "provavel" | "pessimista" | "otimista";
+    const val = (i: Recorrente, entrada: boolean, cen: Cenario) =>
+      cen === "provavel" || i.valor_min === undefined
+        ? i.valor_tipico
+        : ((cen === "pessimista") === entrada ? i.valor_min! : i.valor_max!);
+    const temFaixa = [...comp.itens, ...renda.itens].some((i) => i.valor_min !== undefined && i.valor_min !== i.valor_max);
+
+    const faturaRestante = rHoje.fatura_deste_mes.restante;
+    const jan = janela(mesHoje);
+    const mediaDiaria = mediaDiariaJanela(jan, setComp);
+    const diasRestantes = finLastDay(mesHoje) - diaHoje;
+    const variavelEstimado = mediaDiaria * diasRestantes;
+    const saldoFimDe = (cen: Cenario) => {
+      const rendaPendente = finSoma(renda.itens.filter((i) => !i.ja_lancado).map((i) => val(i, true, cen)));
+      const compPendentes = finSoma(comp.itens.filter((i) => !ehCredito(i) && !i.ja_lancado).map((i) => val(i, false, cen)));
+      return {
+        rendaPendente, compPendentes,
+        saldoFim: rHoje.saldo + futuros + rendaPendente - compPendentes - faturaRestante - variavelEstimado,
+      };
+    };
+
+    // A fatura restante de cada mês projetado não depende do cenário.
+    const faturaRestanteEm: Record<string, number> = {};
+    const restanteEm = (ym: string) =>
+      faturaRestanteEm[ym] ??= calcularResumoMes(rowsDoMes, ym, 0, hojeISO, meios).fatura_deste_mes.restante;
+
+    const mesProj = (ym: string, saldoInicial: number, cen: Cenario) => {
+      type Linha = { grupo: string; nome: string; valor: number; origem: string; valor_min?: number; valor_max?: number };
+      const detalhe: Linha[] = [];
+      const add = (grupo: string, nome: string, lancado: number | null, tipico: number, i?: Recorrente) => {
+        const valor = r2(lancado ?? tipico);
+        const linha: Linha = { grupo, nome, valor, origem: lancado !== null ? "lancado" : "tipico" };
+        if (lancado === null && i && i.valor_min !== undefined && i.valor_min !== i.valor_max) {
+          linha.valor_min = i.valor_min; linha.valor_max = i.valor_max;
+        }
+        detalhe.push(linha);
+        return valor;
+      };
+      let rendaPrev = 0, compCaixa = 0;
+      for (const i of renda.itens) rendaPrev += add("renda", i.nome, lancadoEm(ym, i, true), val(i, true, cen), i);
+      for (const i of comp.itens) if (!ehCredito(i)) compCaixa += add("compromisso_caixa", i.nome, lancadoEm(ym, i, false), val(i, false, cen), i);
+      // Fatura: o restante da lógica existente (compras do mês anterior já
+      // lançadas, menos pagamentos e adiantamentos) + compromissos no
+      // Crédito do mês anterior que ainda não foram lançados.
+      const pm = finPrevMonth(ym);
+      let fatura = add("fatura", `Fatura (compras de ${pm})`, restanteEm(ym), 0);
+      for (const i of comp.itens) if (ehCredito(i) && lancadoEm(pm, i, false) === null) fatura += add("fatura", i.nome, null, val(i, false, cen), i);
+      const livre = saldoInicial + rendaPrev - compCaixa - fatura;
+      const diasNoMes = finLastDay(ym);
+      return {
+        mes: ym,
+        dias_no_mes: diasNoMes,
+        saldo_inicial: r2(saldoInicial),
+        renda_prevista: r2(rendaPrev),
+        compromissos_caixa: r2(compCaixa),
+        fatura_a_pagar: r2(fatura),
+        livre_para_variavel: r2(livre),
+        livre_por_dia: r2(livre / diasNoMes),
+        detalhe,
+      };
+    };
+
+    const p1 = finNextMonth(mesHoje), p2 = finNextMonth(p1);
+    const prov = saldoFimDe("provavel");
+    // Nos cenários, só o resumo de cada mês (o detalhe é o do provável).
+    const cenario = (cen: Cenario) => {
+      const s = saldoFimDe(cen);
+      return {
+        saldo_fim_do_mes: r2(s.saldoFim),
+        meses: [mesProj(p1, s.saldoFim, cen), mesProj(p2, 0, cen)].map(({ detalhe: _, ...resto }) => resto),
+      };
+    };
+    const fonte = comp.fonte === renda.fonte ? comp.fonte : `compromissos: ${comp.fonte}, renda: ${renda.fonte}`;
+    return {
+      base: mesHoje,
+      fonte,
+      janela: jan,
+      janela_incompleta: comp.janela_incompleta,
+      composicao_saldo_inicial: {
+        saldo_hoje: r2(rHoje.saldo),
+        lancamentos_futuros_do_mes: r2(futuros),
+        renda_pendente: r2(prov.rendaPendente),
+        compromissos_pendentes: r2(prov.compPendentes),
+        fatura_restante: r2(faturaRestante),
+        variavel_estimado: r2(variavelEstimado),
+        saldo_fim_do_mes: r2(prov.saldoFim),
+      },
+      meses: [mesProj(p1, prov.saldoFim, "provavel"), mesProj(p2, 0, "provavel")],
+      ...(temFaixa ? { cenarios: { pessimista: cenario("pessimista"), otimista: cenario("otimista") } } : {}),
+      premissas: [
+        comp.fonte === "cadastro" || renda.fonte === "cadastro"
+          ? "Recorrências do cadastro (Finanças, Recorrências previstas) onde houver, por direção; o que a heurística acha e não está cadastrado vem em sugestoes, fora das contas."
+          : `Sem recorrências cadastradas: compromissos e renda vêm da janela ${jan.join(", ")}, nomes presentes em todos esses meses, no máximo ${MAX_OCORRENCIAS_COMPROMISSO} vezes por mês.`,
+        "Valor típico: no cadastro, o meio da faixa; na heurística, a renda do mês completo mais recente (reajuste é degrau) e a mediana da janela pros compromissos.",
+        "O que já está lançado no mês (inclusive com data futura) substitui o valor típico, nunca soma os dois.",
+        `saldo_inicial de ${p1} = saldo de hoje + lançamentos futuros de ${mesHoje} + renda recorrente ainda não lançada - compromissos de caixa ainda não lançados - restante da fatura de ${mesHoje} - gasto variável médio da janela sem pontuais (${r2(mediaDiaria)}/dia) nos ${diasRestantes} dias que faltam.`,
+        `saldo_inicial de ${p2} = 0: supõe que o livre de ${p1} é gasto.`,
+        "Compromissos no Crédito não saem do caixa no mês: entram na fatura do mês seguinte.",
+        ...(temFaixa ? ["cenarios: pessimista = saídas no máximo e entradas no mínimo da faixa; otimista = o contrário. Os campos principais são o provável."] : []),
+        "Lançamentos avulsos já agendados nos meses projetados não entram, exceto compras no Crédito, que já estão na fatura.",
+      ],
+    };
+  };
+
+  return { inicio, analisarMes, comparativoPorNome, projecao };
+}
+// ═══ RESUMO FINANCEIRO · fim ═════════════════════════════════════════════
+
+// ── Tool: resumo_financeiro ───────────────────────────────────────────────
+// Uma leitura só, do começo da tabela até 2 meses depois do último mês pedido
+// ou do mês corrente (o que vier depois). Sem limite inferior porque a cadeia
+// de faturas (carryInto) olha pra trás sem limite fixo; o teto cobre os
+// lançamentos futuros que a projeção usa. A tabela é de uso pessoal (~100
+// linhas/mês): mais simples e exato que buscar sob demanda.
+async function handleResumoFinanceiro(REST: string, headers: Record<string, string>, args: Record<string, any>) {
+  const reYM = /^\d{4}-(0[1-9]|1[0-2])$/;
+  const hoje = todayInSaoPaulo();
+  const mesHoje = hoje.slice(0, 7);
+  const de = String(args?.de ?? args?.mes ?? mesHoje);
+  const ate = String(args?.ate ?? args?.mes ?? de);
+  const incluirMov = args?.incluir_movimentacoes === true || args?.incluir_movimentacoes === "true";
+  if (!reYM.test(de) || !reYM.test(ate)) return toolText("Meses no formato YYYY-MM (ex.: 2026-09).", true);
+  if (ate < de) return toolText("O parâmetro ate não pode ser anterior a de.", true);
+
+  const meses: string[] = [];
+  for (let ym = de; ym <= ate; ym = finNextMonth(ym)) {
+    meses.push(ym);
+    if (meses.length > 12) return toolText("No máximo 12 meses por chamada.", true);
+  }
+  if (incluirMov && meses.length > 3) {
+    return toolText(`Com incluir_movimentacoes, no máximo 3 meses por chamada (o intervalo pedido tem ${meses.length}). Divida em chamadas menores ou chame sem incluir_movimentacoes.`, true);
+  }
+
+  const limite = finNextMonth(finNextMonth(finNextMonth(ate > mesHoje ? ate : mesHoje))) + "-01";
+  const r = await fetch(
+    `${REST}/lifeos_movimentacoes?select=id,name,valor,date,tipo,created_at&date=lt.${limite}&order=date.asc,created_at.asc`,
+    { headers },
+  );
+  if (!r.ok) throw new Error(`select movimentacoes -> ${r.status} ${await r.text()}`);
+  const todas: Mov[] = (await r.json()).map((m: any) => ({ ...m, valor: finNum(m.valor), tipo: m.tipo ?? [] }));
+  const porMes: Record<string, Mov[]> = {};
+  for (const m of todas) (porMes[(m.date || "").slice(0, 7)] ??= []).push(m);
+  const rowsDoMes = (ym: string) => porMes[ym] ?? [];
+
+  // O mês corrente entra na lista mesmo fora do intervalo: a projeção parte
+  // do saldo de hoje.
+  const mesesAbertura = meses.includes(mesHoje) ? meses : [...meses, mesHoje];
+  const aberturas = await Promise.all(mesesAbertura.map(async (ym) => {
+    const a = await fetch(`${REST}/rpc/lifeos_saldo_abertura`, {
+      method: "POST", headers, body: JSON.stringify({ p_before: `${ym}-01` }),
+    });
+    if (!a.ok) throw new Error(`rpc lifeos_saldo_abertura -> ${a.status} ${await a.text()}`);
+    return finNum(await a.json());
+  }));
+
+  // Recorrências cadastradas (ativas). Opcional: sem a migration 0008 a
+  // tabela não existe e o resumo segue só com a heurística.
+  let cadastradas: Cadastrada[] = [];
+  const rc = await fetch(`${REST}/lifeos_recorrencias?select=nome,direcao,valor_min,valor_max,meio,dia&ativa=eq.true&order=nome.asc`, { headers });
+  if (rc.ok) {
+    cadastradas = (await rc.json()).map((x: any) => ({
+      nome: x.nome, direcao: x.direcao, valor_min: finNum(x.valor_min), valor_max: finNum(x.valor_max),
+      meio: x.meio ?? null, dia: x.dia ?? null,
+    }));
+  }
+
+  const intervalo = meses.length > 1;
+  const A = criarAnalise(rowsDoMes, todas, hoje, VOCAB.mov_meio, cadastradas);
+  const resumos = meses.map((ym, i) => ({
+    ...calcularResumoMes(rowsDoMes, ym, aberturas[i], hoje, VOCAB.mov_meio),
+    ...A.analisarMes(ym, { porNome: !intervalo, lista: incluirMov }),
+  }));
+
+  const comparativo = intervalo
+    ? resumos.map((x) => ({
+      mes: x.mes, entradas: x.entradas, saidas_caixa: x.saidas_caixa, saidas_com_credito: x.saidas_com_credito,
+      variacao_mes: x.variacao_mes, saldo: x.saldo, fatura_deste_mes: x.fatura_deste_mes.total,
+      parcial: x.parcial, futuro: x.futuro, consumo_mes: x.consumo_mes, entradas_proprias: x.entradas_proprias,
+    }))
+    : undefined;
+  const comparativoPorNome = intervalo ? A.comparativoPorNome(meses) : undefined;
+  const projecao = A.projecao(aberturas[mesesAbertura.indexOf(mesHoje)]);
+
+  return toolText(JSON.stringify({
+    hoje, inicio_dados: A.inicio, comparativo, comparativo_por_nome: comparativoPorNome, projecao, meses: resumos,
+  }, null, 2));
+}
+
 // ── Tool: search_movimentacoes (Finanças) ─────────────────────────────────
 async function handleSearchMovimentacoes(REST: string, headers: Record<string, string>, args: Record<string, any>) {
   const nome = args?.nome ? String(args.nome).trim().toLowerCase() : "";
@@ -1148,7 +2613,9 @@ async function handleSearchMovimentacoes(REST: string, headers: Record<string, s
   const dataFim = args?.data_fim ? String(args.data_fim) : "";
   const valorMin = args?.valor_min !== undefined ? Number(args.valor_min) : null;
   const valorMax = args?.valor_max !== undefined ? Number(args.valor_max) : null;
-  const limit = clampLimit(args?.limit);
+  // Intervalo fechado de datas = pedido de "ler o período": um mês tem ~100
+  // linhas, e com teto de 50 o modelo recebia meio mês achando que era tudo.
+  const limit = clampLimit(args?.limit, 20, (dataInicio && dataFim) ? 300 : 50);
 
   const r = await fetch(`${REST}/lifeos_movimentacoes?order=date.desc`, { headers });
   if (!r.ok) throw new Error(`select movimentacoes -> ${r.status} ${await r.text()}`);

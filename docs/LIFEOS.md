@@ -48,7 +48,7 @@ dependia do Notion (ver [`NOTAS.md`](NOTAS.md)).
     `<a href="notas.html">`) pra qualquer ação de escrita.
   - **Nativo do hub** — quando o módulo é simples o bastante pra não
     justificar uma tela própria. Hoje **Eventos/Calendário**: view +
-    CRUD completo (criar, ver detalhes, excluir) moram dentro de
+    CRUD completo (criar, ver detalhes, editar, excluir) moram dentro de
     `lifeos.html`/`assets/js/lifeos.js`, no card de Calendário e no modal de
     detalhes do dia. `eventos.html`/`assets/js/eventos.js` (a página própria
     que o módulo tinha antes) ficou **dormente** — sem link nenhum
@@ -73,7 +73,7 @@ dependia do Notion (ver [`NOTAS.md`](NOTAS.md)).
     - **Botão "Adicionar"** (`#add-tarefa-btn`, ao lado de "Abrir" no
       cabeçalho de `#hero-tarefas`) abre o `#tarefa-modal` em modo criar.
     - **`#detail-modal`** ganhou uma coluna de ações (`#detail-modal-actions`,
-      só visível pra tarefa — eventos continuam sem editar/excluir aqui):
+      visível pra tarefa e — desde set/2026 — pra evento também, ver §3.4):
       "Editar" fecha o detail-modal e abre o `#tarefa-modal` já preenchido;
       "Excluir" usa a mesma confirmação inline de dois cliques
       (`confirmDelete`/`resetDeletePending`, cópia isolada — ver §7) já usada
@@ -131,7 +131,9 @@ temas.html + assets/js/temas.js         → paleta do painel (sem gate, sem back
 tags.html + assets/js/tags.js           → vocabulários de todas as tabelas — ver §14
 automacao.html + assets/js/automacao.js → webhook de lançamento por celular — ver §15
 mcp.html + assets/js/mcp.js             → URL do conector MCP e guia das tools — ver §13
+memoria.html + assets/js/memoria.js     → memória de longo prazo (índice + registros) — ver §17
 tutorial.html                           → guia do sistema (sem gate, sem JS próprio) — ver §13
+index.html                              → apresentação pública do LifeOS (sem gate, script inline mínimo) — ver §18
 eventos.html + assets/js/eventos.js     → DORMENTE — sem link algum apontando pra ela (ver §5)
 ```
 
@@ -153,8 +155,11 @@ emenda deliberada, e vale entender a fronteira:
 
 Existe porque o projeto vai virar open-source: é o único arquivo que um fork
 precisa editar pra apontar pro próprio backend. Hoje `lifeos.js`, `publicar.js`,
-`senhas.js`, `temas.js` e `tema.js` consomem; `financas.js`, `tarefas.js`,
-`notas.js` e `eventos.js` ainda têm as constantes chapadas e migram depois.
+`senhas.js`, `temas.js` e `tema.js` consomem, e também `financas.js`,
+`tarefas.js`, `notas.js`, `eventos.js`, `memoria.js` e `gallery.js`. A única
+que ainda tem constantes próprias é `gate.js` (com `login.html`): é o fluxo
+de senha das páginas protegidas do arquivo público, que não carregam o
+config — ver `AUTH.md`.
 
 `assets/js/tema.js` é o segundo arquivo compartilhado, pela mesma lógica: ele
 não tem estado nem regra de negócio, só lê a config e troca o `href` de um
@@ -223,7 +228,8 @@ cima) garante contraste do título por cima, seja qual for o conteúdo da
 imagem ali) com `.hub-icon-wrap` (imagem `assets/images/
 profile_lifeos.jpeg`, quadrado grande — `clamp(120px, 15vw, 168px)` —
 bordas arredondadas, sobreposta ao banner via `margin-top` negativo) +
-`<h1>LifeOS</h1>` + subtítulo, seguido de `.hub-quicknav` logo acima do
+`<h1>LifeOS</h1>` + subtítulo (há uma variante **imersiva** dessa capa, só
+CSS, escolhida em Temas — ver §12), seguido de `.hub-quicknav` logo acima do
 divisor (`.hub-masthead-rule`) que separa o cabeçalho do resto do conteúdo.
 **Sem entrada pra Eventos** — o card de Calendário já é a primeira
 hero-section, logo abaixo do quicknav, então um atalho pra rolar até ele
@@ -312,7 +318,9 @@ rolam até Manifestações):
     `carryInto`) que ignorava adiantamento explícito e cadeias de mais de
     um mês — mostrava valores errados sempre que havia excedente/
     adiantamento envolvido. Ver FINANCAS.md pro algoritmo completo; a regra
-    de negócio é UMA só, cada arquivo só replica o código (ver §2/§7).
+    de negócio é UMA só, cada arquivo só replica o código (ver §2/§7). Há uma
+    terceira cópia no MCP (`resumo_financeiro`) — ver `FINANCAS.md` §9.1
+    pra lista das três e como verificar que batem.
   - **Últimas transações** (largo, full-width, embaixo) — 6 linhas.
   - Link "Abrir" → `financas.html`.
 - **`#hero-tarefas`** (`.tar-bento`: 3 cards pequenos de contagem por status
@@ -346,14 +354,18 @@ rolam até Manifestações):
     isso) — as outras 2 colunas mantêm a ordem que já vem da API
     (`created_at` asc). Sem isso, com a maioria das tarefas reais já
     concluídas (69 de 75, ver §6.3), a coluna ficava dominada pelas mais
-    antigas, escondendo as concluídas recentemente. Trocar o `<select>` só
-    re-renderiza o kanban (`renderTarMiniKanban`),
+    antigas, escondendo as concluídas recentemente. À esquerda do `<select>`,
+    na mesma linha do rótulo "Kanban" (`.tar-kanban-controls`), fica uma
+    **busca por título** (`#tar-busca-input`, mesmo visual do select,
+    `TAR_BUSCA_FILTRO`) que compõe com projeto/view — só recorta o kanban,
+    nunca as contagens por status; reseta ao deslogar. Trocar o `<select>`
+    (ou digitar na busca) só re-renderiza o kanban (`renderTarMiniKanban`),
     não refaz fetch (todas as tarefas já vieram no boot via
     `apiTarefasQuery` sem filtro). **Clicar num card** (qualquer
     dispositivo) abre `#detail-modal` — leitura completa da tarefa
     (incluindo descrição renderizada em markdown) **com botões Editar/
-    Excluir** (`#detail-modal-actions`, só aparecem pra tarefa, não pra
-    evento): Editar fecha o detail-modal e abre `#tarefa-modal` já
+    Excluir** (`#detail-modal-actions`, aparecem pra tarefa e evento, nunca
+    pra nota): Editar fecha o detail-modal e abre `#tarefa-modal` já
     preenchido; Excluir usa a confirmação inline de dois cliques
     (`confirmDelete`, cópia isolada — ver §7).
     **Drag-and-drop entre colunas** (só **desktop**, `IS_DESKTOP` —
@@ -427,8 +439,8 @@ rolam até Manifestações):
       leitura — "Tela cheia" é a única ação, e virou icon-button ao lado do
       Fechar (`.pdet-banner-top-actions`, ambos reusando `.pdet-close`) em
       vez do botão-texto que ficava num rodapé (`.detail-modal-foot`) —
-      esse rodapé agora serve exclusivamente tarefa (Editar/Excluir); pra
-      nota e evento fica sempre `hidden`. Leva pra `notas.html?nota=<id>`,
+      esse rodapé agora serve só tarefa e evento (Editar/Excluir); pra
+      nota fica sempre `hidden`. Leva pra `notas.html?nota=<id>`,
       ver `NOTAS.md` §2 — nunca dois modais abertos ao mesmo tempo.
 - **`#hero-manifestacoes`** (última hero-section — ver §3.3): grid de
   `.manif-card` (`.manif-grid`, **3 colunas fixas no desktop**
@@ -567,14 +579,30 @@ exatamente a previsão que já estava aqui antes de Tarefas existir.
   eventos não existem em `notas.js`) é quem formata "dd/mm → dd/mm" no
   `#detail-modal` de leitura; a timeline usa a forma curta "até dd/mm" por
   causa do espaço.
-- **Ver + excluir (modo eventos) / só ver (modo tarefas)**: clicar numa
+- **Editar evento (set/2026, pedido do autor — "da mesma maneira que
+  funciona para as tarefas")**: o MESMO `#evento-modal` serve criar e
+  editar (`openEventoModal(id)`, `EDIT_EVENTO_ID` null = criar, título
+  `#evento-modal-title` troca pra "Editar evento"), mesmo padrão do
+  `#tarefa-modal`. Duas entradas: botão **Editar** do `#detail-modal`
+  (`#detail-modal-actions`, o mesmo rodapé da tarefa — o dispatcher decide
+  por `CURRENT_DETAIL_EVENTO_ID` vs `CURRENT_DETAIL_TAREFA_ID`) e o
+  **lápis** de cada linha do `#day-modal`, ao lado do lixinho. Todos os
+  campos editáveis (nome, data, data final — apagar volta a ser evento de
+  um dia só —, tipo, projeto). O picker de projeto mantém o projeto atual
+  mesmo fora de "Em Progresso" (mesma exceção do picker de Tarefas). Ao
+  salvar, `HUB_CAL_YM` navega pro mês do evento; se a edição moveu o
+  evento pra um mês ainda não buscado, `ensureHubCalMonth` busca o resto
+  daquele mês (não marca como carregado só por ter este evento em
+  memória). Backend: ação `update` de `lifeos-eventos` (§6.1).
+- **Ver + editar + excluir (modo eventos) / só ver (modo tarefas)**: clicar numa
   célula do mini-calendário abre `#day-modal` (`openDayModal(dateStr)`).
-  Em modo eventos, cada linha tem um botão de excluir
+  Em modo eventos, cada linha tem um botão de editar e um de excluir
   (`.row-action-btn.row-action-danger`, sempre visível, não hover-only —
   dentro de um modal já focado, hover não ajuda e não existe em touch) com
   a confirmação inline de dois cliques (`confirmDelete`/
   `resetDeletePending`, cópia própria — ver §2/§7); excluir re-renderiza o
-  modal no lugar (sem fechar). Em modo tarefas, a lista é só leitura (nome +
+  modal no lugar (sem fechar). O `#detail-modal` de um evento também tem
+  Excluir (fecha o detail-modal no sucesso). Em modo tarefas, a lista é só leitura (nome +
   projeto + tag de status), sem botão nenhum.
 - **"Hoje" no mini-calendário**: wash dourado translúcido
   (`rgba(196,145,58,0.30)`, texto `var(--gold)`), não um bloco sólido
@@ -641,6 +669,40 @@ quando nada tinha mudado desde a última visita).
   tinha aceitado — app de uso pessoal single-user, não vale a complexidade
   de sincronização cross-aba/cross-página.
 
+### 3.6 Citações — banner sorteado + modal com a lista (set/2026)
+
+Uma tabela de citações (texto + quem disse) que funciona
+**diferente das outras listagens** do hub — a área não mostra a lista, mostra
+**uma** citação, sorteada a cada abertura, logo acima do Calendário. A lista
+completa fica atrás de um clique.
+
+- **`#cit-banner`** (um `<button>`, entre `.hub-masthead-rule` e
+  `#hero-eventos` — não é uma `.hero-section`, então a borda dupla entre
+  seções não muda). Mesma identidade da citação chapada no `index.html`
+  (`.notice`): fundo tingido pelo acento (`color-mix` com `--gold`), borda
+  fina nos **quatro** lados — nunca faixa lateral —, prosa em EB Garamond
+  (a fonte entrou no `<link>` do Google Fonts do hub por causa disto), aspas
+  “ ” em Playfair itálico no acento e o autor em mono miúdo alinhado à
+  direita. Segue o tema porque só usa tokens.
+- **Sorteio** (`sortearCitacao`): roda em todo `renderAllHub()` — ou seja, a
+  cada boot e a cada ↻. Com mais de uma citação, nunca repete a que já está
+  na tela. Escritas no modal **não** re-sorteiam: editar atualiza o texto no
+  lugar; excluir a que está no banner sorteia outra.
+- **Destaque**: `*trecho*` no texto vira `<strong>` no acento
+  (`fillCitacaoTexto`). O parse monta nós com `createElement`/`textContent`,
+  nunca `innerHTML` — o texto vem do banco (e do MCP).
+- **`#citacoes-modal`**: um modal só, dois estados — a lista
+  (`#cit-list-view`, com Editar/Excluir por linha) e o formulário (`#cit-form`,
+  criar/editar), que substitui a lista enquanto aberto. Excluir usa o
+  `confirmDelete` de dois cliques (§7). ESC no formulário volta pra lista; na
+  lista, fecha. Sem nenhuma citação, o banner vira um convite e o clique vai
+  direto pro formulário.
+- **Cache**: citações entram no `lifeos_hub_cache` (`HUB_CACHE_V = 4`), mas
+  são **exceção ao "eterno até ↻"** da §3.5 — re-buscam a cada boot, mesmo
+  com cache válido, porque também chegam pelo MCP (`create_citacao`) e o
+  sorteio precisa do conjunto atual. Falha nessa busca não derruba o boot.
+- **Modo foco** de Manifestações esconde o banner junto com as seções.
+
 ---
 
 ## 4. `tarefas.html` — módulo Tarefas (CRUD completo, página própria)
@@ -676,7 +738,10 @@ e §6.1) — essa assimetria é proposital, não um descuido.
   kanban (ver abaixo) e uma tabela (`.tar-table`, ordenada por data de
   entrega) com as mesmas tarefas. Um filtro por Tipo (`#tipo-filters`,
   chips — só aparece se o projeto tiver tarefas com tipo) vale pras duas
-  views.
+  views. Na mesma linha, entre o select e o toggle, uma **busca por
+  título** (`#busca-input`, `BUSCA_FILTRO`, mesmo padrão de `.busca-field`
+  em `notas.html`) também filtra kanban + lista — nunca estatísticas nem
+  gráficos; sobrevive à troca de projeto e reseta ao deslogar.
 - **Kanban** (`.kanban-board`): **3 colunas fixas** — `Não Iniciado`,
   `Em Andamento`, `Feito` — nessa ordem, com fundo colorido por status
   (cinza/dourado/verde translúcido, mesmo mapeamento do mini-kanban do hub
@@ -787,8 +852,8 @@ a decisão de centralizar tudo em `lifeos.html` foi deliberada.
 
 ### 6.1 `lifeos_eventos`
 
-Falado por `lifeos.html` (query + create + delete — `eventos.html` está
-dormente, ver §5).
+Falado por `lifeos.html` (query + create + update + delete — `eventos.html`
+está dormente, ver §5).
 
 - **Tabela `public.lifeos_eventos`**: `id uuid`, `name text`, `date date`,
   **`date_fim date` (nullable, `check (date_fim is null or date_fim >=
@@ -808,8 +873,12 @@ dormente, ver §5).
   entra —, cada um já com `date_fim`/`projeto_id`), `create` (`{ token,
   action:"create", evento:{name,date,date_fim?,tipo,projeto_id?} }` —
   `date_fim`, se vier, precisa ser `>= date`, validado antes do CHECK do
-  banco pra devolver um erro claro), `delete` (`{ token, action:"delete",
-  id }`). Sem `update` nesta entrega.
+  banco pra devolver um erro claro), `update` (`{ token, action:"update",
+  id, patch:{name?,date?,date_fim?,tipo?,projeto_id?} }` — PATCH parcial,
+  mesmo contrato de `lifeos-tarefas`; `date_fim`/`projeto_id` aceitam
+  `null` pra limpar; a checagem `date_fim >= date` usa a data EFETIVA — se
+  o patch só traz uma das duas, a outra vem da linha atual; set/2026),
+  `delete` (`{ token, action:"delete", id }`).
 
 ### 6.2 `lifeos_projetos` e `lifeos_tarefas`
 
@@ -955,6 +1024,17 @@ clique dentro da janela chama `run()` (a chamada de API) e, no sucesso,
 com exclusão deve **copiar** esse padrão pro seu próprio arquivo, não
 importar de outro (ver §2).
 
+**Armadilha (bug real, corrigido em set/2026 em `lifeos.js` — "não consigo
+excluir eventos"):** um listener em `document` que cancela a confirmação
+pendente ao clicar fora de `.row-action-btn` **não pode** usar
+`e.target.closest(...)`. O clique quase sempre cai no `<i>` do ícone, e
+`confirmDelete` troca o conteúdo do botão por "confirmar?" durante o
+próprio dispatch — o `<i>` fica solto do DOM, `closest()` devolve `null`, e
+o reset desfaz a confirmação no mesmo clique (o segundo clique nunca
+encontra nada pendente). Use `e.composedPath()`, que é congelado no início
+do dispatch. Os listeners delegados de `financas.js`/`eventos.js` não
+sofrem disso porque rodam o `closest` ANTES de trocar o conteúdo.
+
 ---
 
 ## 8. Como plugar um módulo novo
@@ -1047,12 +1127,14 @@ importar de outro (ver §2).
 
 | Módulo | Status | Onde vive | Tabela(s) | Edge Function(s) |
 |---|---|---|---|---|
-| Finanças | ✅ Funcional, página própria | `financas.html` | `lifeos_movimentacoes` | `lifeos-movimentacoes` + `lifeos-ingest` |
+| Finanças | ✅ Funcional, página própria (+ Recorrências previstas no modal da topbar, ver `FINANCAS.md` §9.2) | `financas.html` | `lifeos_movimentacoes` + `lifeos_recorrencias` | `lifeos-movimentacoes` + `lifeos-ingest` + `lifeos-recorrencias` (o `resumo_financeiro` do MCP lê a tabela) |
 | Eventos / Calendário | ✅ Funcional, nativo do hub (CRUD completo) | `lifeos.html` (`eventos.html` dormente, ver §5) | `lifeos_eventos` | `lifeos-eventos` |
 | Tarefas | ✅ Funcional, página própria + CRUD completo também no hub (ver §3.2) | `tarefas.html` E `lifeos.html` | `lifeos_tarefas` | `lifeos-tarefas` |
 | Projetos | ✅ Funcional, CRUD só no hub (leitura em `tarefas.html`, ver §1/§3.2) | `lifeos.html` (`tarefas.html` só lê) | `lifeos_projetos` | `lifeos-projetos` |
 | Manifestações | ✅ Funcional, nativo do hub (leitura + CREATE, modo foco — ver §3.3) | `lifeos.html` | `lifeos_manifestacoes` | `lifeos-manifestacoes` |
 | Notas | ✅ Funcional, página própria (CRUD completo) | `notas.html` | `lifeos_notas` + `lifeos_notas_projetos` | `lifeos-notas` |
+| Citações | ✅ Funcional, nativo do hub (banner sorteado + CRUD no modal — ver §3.6) | `lifeos.html` | `lifeos_citacoes` | `lifeos-citacoes` (+ `search_citacoes`/`create_citacao` no MCP) |
+| Memória | ✅ Funcional, página própria no drawer (CRUD completo — ver §17) | `memoria.html` | `lifeos_memorias` + `lifeos_memoria_registros` | `lifeos-memorias` (+ 6 tools e o índice nas `instructions` do MCP) |
 
 Ver [`FINANCAS.md`](FINANCAS.md) pra tudo sobre o módulo Finanças (contrato
 da API, regras de negócio, segurança) e [`NOTAS.md`](NOTAS.md) pra tudo
@@ -1244,6 +1326,33 @@ index. O mapa está chapado em quatro lugares (`index.html`, `assets/js/index.js
 `publicar.js` e `temas.js`) e mudar uma cor exige commit em todos. Unificar isso
 mexe no render do index, que é a capa pública — trabalho separado.
 
+### Capa do hub: clássica ou imersiva (set/2026)
+
+Segunda preferência de aparência na mesma tela, seção "Capa do painel". A
+**imersiva** dá ao topo de `lifeos.html` o desenho da apresentação
+(`lifeos/index.html`, §18): banner de ponta a ponta, topbar por cima da
+imagem, ícone e título grande empilhados, subtítulo virando "kicker" dourado.
+
+- **Mesmo caminho do tema:** `tema.js` lê `localStorage['lifeos_hub_capa']`
+  → `LIFEOS_CONFIG.hubCapa` → `'classica'` e marca o `<html>` com
+  `data-hub-capa` **antes da primeira pintura** — sem flash da capa clássica.
+  API: `LIFEOS_TEMA.capa()/definirCapa(v|null)/capaPadrao()/usandoCapaPadrao()`.
+- **O atributo NÃO se chama `data-capa`.** Esse nome é o marcador que
+  `blog.js` usa pra redirecionar a capa do arquivo pro painel; no hub, com o
+  blog desligado, viraria um loop de redirecionamento.
+- **Só CSS**, sob `html[data-hub-capa="imersiva"]` em `lifeos.html`. Markup e
+  `lifeos.js` são os mesmos — `applyIdentidade()` e o banner de um fork
+  continuam valendo.
+- **Contraste:** o banner padrão tem moldura de pergaminho claro, e um fork
+  pode usar qualquer imagem. Nada sobre a imagem depende dela: "← arquivo",
+  "sincronizado" e os botões da topbar ganham fundo escuro desfocado; título e
+  subtítulo ficam abaixo, sobre `--bg` (o degradê leva o banner até ele).
+- `100vw` inclui a barra de rolagem; `body { overflow-x: clip }` (só na
+  imersiva) evita a rolagem horizontal sem criar contêiner de rolagem.
+- As prévias na tela usam `var()` de propósito (o que se compara é o formato,
+  não a cor) e as imagens de `identidade` do config, então um fork vê a
+  própria capa.
+
 ### A armadilha do `[hidden]`
 
 Toda página do LifeOS precisa desta linha no `<style>`:
@@ -1323,7 +1432,8 @@ Backend: **`lifeos-config`** (ver `AUTH.md`). O valor nunca volta do servidor
 ### `mcp.html`
 
 Mostra a URL do conector com botão de copiar, explica o que é MCP, lista as
-oito tools e traz exemplos de pergunta.
+tools (23 desde set/2026: as de Memória — ver §17 — e `resumo_financeiro`,
+ver `FINANCAS.md` §9.1) e traz exemplos de pergunta.
 
 **Tem gate**, porque a URL carrega o token de acesso embutido no path: quem a
 tiver lê todo o LifeOS.
@@ -1377,7 +1487,7 @@ Agora a fonte de verdade é a tabela `lifeos_vocabularios`, e os `CHECK`
 foram derrubados. **A validação não sumiu** — passou a ser feita pelas Edge
 Functions contra a tabela.
 
-### Os dez domínios
+### Os onze domínios
 
 | Domínio | Grava em | Formato |
 |---|---|---|
@@ -1391,6 +1501,7 @@ Functions contra a tabela.
 | `manifestacao_tag` | `lifeos_manifestacoes.tags` | array |
 | `mov_direcao` | `lifeos_movimentacoes.tipo` | array |
 | `mov_meio` | `lifeos_movimentacoes.tipo` | array |
+| `memoria_categoria` | `lifeos_memorias.categoria` | escalar (migration 0007, ver §17) |
 
 **`mov_direcao` e `mov_meio` gravam na MESMA coluna** — herdado da migração
 do Notion. É o caso que mais exige cuidado em qualquer operação de rename.
@@ -1543,3 +1654,158 @@ comportamento histórico.
 
 A escolha vale para quem **não vai publicar nada**: uma capa vazia no ar é
 pior que não ter capa.
+
+---
+
+## 17. Memória (`memoria.html`) — memória de longo prazo fora do harness
+
+Set/2026, migration `0007_lifeos_memorias.sql`. Pedido do autor: o que uma IA
+aprende sobre ele (preferências, contexto de projetos, correções) vivia na
+memória do próprio cliente — trocar de harness ou de modelo perdia tudo. Agora
+esse entendimento mora no LifeOS, e qualquer cliente conectado ao MCP lê e
+escreve nele.
+
+### Modelo: índice + registros
+
+Mesmo formato de um `MEMORY.md` + arquivos:
+
+| Tabela | Papel | Campos |
+|---|---|---|
+| `lifeos_memorias` | o **índice** — uma linha por tema | `titulo` (único, sem diferenciar caixa/espaços), `descricao` (1–2 frases, ≤400), `categoria` (vocabulário `memoria_categoria`) |
+| `lifeos_memoria_registros` | o **conteúdo** — N fatos datados por memória | `texto` (≤8000), `origem` (quem escreveu: `manual`, `claude-code`, `claude.ai`… texto livre), `created_at` |
+
+- **A descrição é o índice.** É o que o modelo vê antes de abrir uma memória,
+  então precisa bastar pra ele decidir se vale abrir. O limite de 400 é
+  apertado de propósito.
+- **Registros crescem por append** e cada um é datado: memória envelhece, e a
+  data deixa o modelo desconfiar de um fato antigo.
+- **Qualquer escrita num registro toca o `updated_at` da memória-mãe** — o
+  "atualizada em" reflete o último fato, não só o último rename.
+- `on delete cascade`: apagar a memória leva os registros.
+- Categorias iniciais: `Perfil`, `Preferências`, `Projetos`, `Referências`
+  (espelham os tipos user/feedback/project/reference do Claude Code, pra a
+  migração de lá ser direta) e `Vida`. Editáveis em Tags (§14).
+
+### A tela
+
+Página própria, alcançada pelo drawer do hub num grupo novo **"Contexto"**,
+acima de "Configuração" — memória é dado, não configuração. Segue o padrão das
+outras páginas de drawer (gate, mock local, skin, tudo por cópia — §2).
+
+- Lista agrupada por categoria (ordem do vocabulário; categoria órfã cai num
+  grupo no fim em vez de sumir), título em ordem alfabética dentro do grupo.
+- Busca por título, descrição **e texto dos registros**; chips de categoria.
+- **Origem visível e filtrável.** A origem é do *registro*, não da memória
+  (uma memória junta fatos de clientes diferentes). Cada origem tem cor +
+  ícone + rótulo (`ORIGENS` em `memoria.js`: `claude-code` → Claude Code,
+  `claude.ai` → Claude web, `manual` → Você (tela), `mcp` → MCP); uma origem
+  desconhecida ganha uma cor estável derivada do nome, sem cadastro. A cor
+  chega por `--oc` e pinta a pill do registro, o ponto da linha do tempo e o
+  chip de filtro. O cabeçalho de cada memória resume as origens com a contagem
+  de cada uma, sempre sobre todos os registros.
+- Filtro por origem (chips gerados dos dados, ordenados por volume): mostra só
+  as memórias com algum registro daquela origem e, dentro delas, só esses
+  registros; a contagem vira "2 de 6 registros" e um botão "N ocultos pelo
+  filtro — mostrar todos" limpa o filtro. Com o filtro ativo, a busca ignora o
+  texto dos registros ocultos.
+- Cada memória expande no lugar: linha do tempo dos registros (data, origem,
+  "editado em" se foi corrigido), editar/excluir por registro, e um composer
+  pra registrar um fato novo (Ctrl/⌘+Enter envia).
+- Editar a memória (título/descrição/categoria) e criar uma nova usam o mesmo
+  modal; ao criar dá pra já escrever o primeiro registro.
+- Registros em **EB Garamond** — são prosa, mesmo precedente do banner de
+  Citações (§3.6).
+- **A tela exclui; o MCP não.** Memória errada é pior que nenhuma, e podar é
+  trabalho de humano. Exclusão com o `confirmDelete` de dois cliques (§7).
+
+Backend: **`lifeos-memorias`** — `query` (tudo + categorias), `create`,
+`update`, `delete`, `registro_create`, `registro_update`, `registro_delete`.
+Mesmo gate `check_master_token` de todas as `lifeos-*`.
+
+### No MCP
+
+Seis tools (em `lifeos-mcp`, falando direto com o PostgREST como os outros
+domínios — limites e regra de título único são **cópia** dos de
+`lifeos-memorias`):
+
+| Tool | O quê |
+|---|---|
+| `list_memorias` | índice: título, categoria, descrição, nº de registros |
+| `get_memoria` | abre uma ou mais memórias (por título, trecho único ou id) com todos os registros |
+| `create_memoria` | tema novo; recusa título existente e aponta `add_registro` |
+| `add_registro` | acrescenta um fato (a operação mais comum) |
+| `update_memoria` | patch de título/descrição/categoria |
+| `update_registro` | corrige um fato — **substituição do texto inteiro**, pelo mesmo motivo de `update_nota` |
+
+Sem DELETE, mesma política do resto do servidor.
+
+**O índice vai nas `instructions` do `initialize`.** `buildInstructions()`
+monta, a cada handshake, um texto curto de uso + o índice agrupado por
+categoria (`título — descrição (N registros)`). O cliente põe isso no system
+prompt, então o modelo começa a conversa sabendo quais memórias existem, sem
+gastar uma tool call. Duas salvaguardas:
+
+- teto de 6000 caracteres no índice (`INSTRUCTIONS_MAX_INDICE`) — clientes
+  truncam instruções longas; passando disso, o índice é cortado com um aviso
+  apontando `list_memorias`;
+- se a leitura falhar, o handshake segue com as instruções sem índice.
+
+`list_memorias` continua existindo porque nem todo cliente usa `instructions`,
+e porque o índice injetado é uma foto do momento da conexão.
+
+---
+
+## 18. `index.html` — a apresentação pública (landing)
+
+Set/2026. Com o `resumo_financeiro` e a memória de longo prazo, o autor quis uma
+página que explicasse o LifeOS a quem chega de fora: o que ele se propõe a ser,
+o que faz e como funciona. Mora em `lifeos/index.html`, então a URL
+`…/<repositório>/lifeos/` abre a apresentação e o painel continua em
+`lifeos/lifeos.html`. O acesso é pelo botão "o que é o lifeos" no footer do
+`index.html` da raiz.
+
+**Diferente do `tutorial.html`, não no lugar dele.** O tutorial ensina a *usar*
+o sistema depois de instalado (configurar, por onde começar); a apresentação
+explica o que ele *é*, pra quem está de fora.
+
+- **Sem gate**, pelo mesmo motivo do tutorial: só texto, não lê nem escreve
+  dado nenhum.
+- **Nenhum link pra área credenciada** (decisão do autor, 2ª rodada): nada de
+  "entrar no painel" nem "guia de uso". O único link de saída é a volta pro
+  arquivo; os demais botões são âncoras da própria página. As telas do menu
+  são *descritas* (§06), nunca linkadas.
+- **Layout de duas colunas** por seção: à esquerda o cabeçalho (número,
+  título, um resumo curto) acompanha a rolagem; à direita o conteúdo usa a
+  largura inteira. Substituiu a primeira versão, que limitava a prosa em
+  `66ch` e deixava um vão vazio à direita na maior parte da página.
+- **O MCP é o centro** (§04, sete subseções): a conexão (token no caminho da
+  URL, rotação sem redeploy, fechado por padrão), uma conversa ilustrativa com
+  as chamadas de ferramenta à vista, as 23 ferramentas por domínio com o
+  contrato de cada uma, as decisões que tornam o servidor usável por um modelo,
+  `resumo_financeiro`, a memória e o ciclo completo.
+- **Contraste sobre o banner:** o banner tem moldura de pergaminho claro; o
+  "← arquivo" e a etiqueta do topo são pílulas `.glass` (fundo escuro
+  desfocado), nunca texto solto. A foto do ícone é retrato: `object-position:
+  center top` preserva a auréola no recorte quadrado.
+- **Todo número é ilustrativo.** A página é pública; nenhum valor ou memória
+  real do painel aparece nela, e os blocos de exemplo dizem isso na tela.
+- **Visual:** identidade do LifeOS — tokens do tema ativo (`tema.js`), Font
+  Awesome duotone, Playfair nos títulos, EB Garamond na prosa (é uma página de
+  leitura), mono nos rótulos; a capa reaproveita banner e ícone do hub (§3.1);
+  seções separadas pelo mesmo divisor duplo das hero-sections.
+- **Diagramas Mermaid** (modelo de dados e arquitetura) com `theme: 'base'` e
+  `themeVariables` lidas dos tokens do tema **em runtime**, depois do `load`
+  — o diagrama acompanha a paleta escolhida em vez de fixar uma (VISUAL.md).
+- **Script inline mínimo** (`blog.js` + inicialização do Mermaid), sem
+  `assets/js/` próprio — como o tutorial, é uma página de texto, não um módulo.
+- **Blog desligado:** os dois links pro arquivo (topbar e fecho) somem via
+  `blog.js` (`.topbar .back` e `[data-requer-blog]`).
+- **Sem link pro GitHub:** a página descreve o sistema, não um endereço; o
+  texto diz que o projeto foi *preparado* pra ser instanciado (migrations,
+  seed, config, MIT). Um fork que queira apontar pro próprio repositório
+  acrescenta o link no §07.
+
+**Ao mudar o sistema, confira esta página.** Ela cita fatos que envelhecem: a
+lista das 23 tools do MCP (os `<code>` de `.tl` devem bater com `buildTools()`
+em `lifeos-mcp`, e os rótulos consulta/escrita com o que cada uma faz), as
+quatro regras de Finanças, os módulos e as telas do menu.
