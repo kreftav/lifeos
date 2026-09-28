@@ -32,9 +32,9 @@ window.LIFEOS_CONFIG = {
   /* ── Backend ──────────────────────────────────────────────────────────
    * Supabase → Project Settings → API. A URL é `https://<ref>.supabase.co`.
    */
-  supabaseUrl: 'https://SEU-PROJETO.supabase.co',
+  supabaseUrl: 'https://ywzdeuvltdvxynphohga.supabase.co',
   anonKey:
-    'COLE-AQUI-A-CHAVE-PUBLICAVEL-ANON',
+    'sb_publishable_yvfYr9hgJEdQy9wsWT0xFg_8OmOxiFx',
 
   /* ── Repositório ──────────────────────────────────────────────────────
    * Alvo da publicação de páginas novas (lifeos/publicar.html). O PAT usado
@@ -42,8 +42,8 @@ window.LIFEOS_CONFIG = {
    * depois do gate mestre. Ver AUTH.md §"Painel admin".
    */
   gh: {
-    owner:  'SEU-USUARIO',
-    repo:   'SEU-REPOSITORIO',
+    owner:  'kreftav',
+    repo:   'lifeos',
     branch: 'main',
   },
 
