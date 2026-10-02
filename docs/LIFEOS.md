@@ -397,7 +397,12 @@ rolam até Manifestações):
   único status de Projeto sem equivalente em Tarefa), **tags** (chips,
   `.proj-tag`), **progresso** (barra + "`x/y tarefas`", calculado na hora
   sobre `TAREFAS_ALL` filtrado por `projeto_id` — sem fetch extra, já
-  carregado no boot) e **ações** (`.row-action-btn` Editar/Excluir, mesmo
+  carregado no boot; **projeto sem tarefa nenhuma mas com notas** — out/2026
+  — mostra "`N notas`" e a barra vira quantidade, não progresso: largura
+  relativa ao projeto só-de-notas com mais notas, contada sobre `NOTAS_HUB`
+  e `PROJETOS` inteiros, para a escala não mudar com o filtro de status, em
+  `var(--blue)` via `.proj-progress-fill.is-notas`; sem nenhum dos dois,
+  "sem tarefas nem notas") e **ações** (`.row-action-btn` Editar/Excluir, mesmo
   ícone-botão do resto do arquivo). Excluir usa `confirmDelete` (dois
   cliques, ver §7); em caso de `409 has_tarefas` (projeto com tarefa
   vinculada — `on delete restrict`, ver §6.2), a mensagem de erro já vem
@@ -703,6 +708,47 @@ completa fica atrás de um clique.
   sorteio precisa do conjunto atual. Falha nessa busca não derruba o boot.
 - **Modo foco** de Manifestações esconde o banner junto com as seções.
 
+### 3.7 Backup completo — `#backup-modal` (set/2026)
+
+Um botão no cabeçalho do hub que, com a senha mestre, baixa
+um `.zip` com os `.sql` que repopulam outro banco com os mesmos dados.
+
+- **Botão**: `#backup-btn` (`fa-database`) na `.topbar`, antes do ↻. É ação,
+  não navegação — por isso nem drawer nem quicknav (ver `/lifeos-menu`).
+- **Senha de novo**: o modal pede a senha mestre em vez de usar
+  `SESSION_PW`. O arquivo leva o banco inteiro; um navegador com "lembrar"
+  ligado não deveria bastar. Consequência: `unauthorized` ali é "senha
+  incorreta" e **não** chama `onLogout()`. A senha sai do input ao fechar o
+  modal e depois de cada backup gerado.
+- **Senhas e tokens** (chips Incluir / Deixar de fora, padrão Incluir):
+  `access_tokens` (senhas em texto puro), `token_pages` e `admin_config`.
+  De fora, essas tabelas nem são esvaziadas nem repostas — o destino fica
+  com as credenciais que já tem.
+- **Backend**: a RPC `lifeos_backup_dump()` (migration 0009, só
+  `service_role`) varre **toda tabela do schema `public` pelo catálogo** —
+  módulo novo entra no backup sem registro nenhum — e devolve colunas,
+  FKs, sequências e linhas (ordenadas pela PK). A Edge Function
+  `lifeos-backup` ordena as tabelas por dependência e gera os arquivos:
+  `LEIAME.md`, `00_limpar.sql` (`truncate … restart identity`, sem
+  `cascade`), um `NN_<tabela>.sql` por tabela com linhas e
+  `NN_sequencias.sql` (`setval` das colunas identity/serial).
+- **Formato do insert**: `insert into t (cols) select cols from
+  jsonb_populate_recordset(null::t, $lifeos$[…]$lifeos$)` — o Postgres
+  converte cada valor pelo tipo da coluna (arrays, jsonb, numeric, datas) e
+  o dollar quoting dispensa escapar aspas e barras. Validado com restore
+  num banco limpo e checksum idêntico por tabela.
+- **O .zip é montado no front**, sem biblioteca: `zipArquivos` escreve o
+  formato ZIP à mão (CRC-32 + cabeçalhos) com deflate pelo
+  `CompressionStream('deflate-raw')` nativo; onde ele não existe, o arquivo
+  vai sem compressão. Nome com data/hora **local**:
+  `lifeos-backup-AAAA-MM-DD-HHMM.zip`.
+- **Fora do backup**: arquivos do Storage (banners das Manifestações,
+  galeria — as linhas guardam a URL pública do projeto de origem) e os
+  secrets das Edge Functions. O schema também não: o destino recebe as
+  migrations do repositório antes (o `LEIAME.md` diz até qual).
+- **Modo local**: `mockBackup` aceita só a senha `local-dev` (a da sessão
+  mock) e gera um `.zip` pequeno com as citações do mock.
+
 ---
 
 ## 4. `tarefas.html` — módulo Tarefas (CRUD completo, página própria)
@@ -742,6 +788,20 @@ e §6.1) — essa assimetria é proposital, não um descuido.
   título** (`#busca-input`, `BUSCA_FILTRO`, mesmo padrão de `.busca-field`
   em `notas.html`) também filtra kanban + lista — nunca estatísticas nem
   gráficos; sobrevive à troca de projeto e reseta ao deslogar.
+- **Views salvas** (`#view-filters`, tabela `lifeos_views`, function
+  `lifeos-views` — o mesmo recurso existe em `notas.html`, com cópia
+  isolada do código): badges "Todas" + uma por view + "+ Nova view". Uma
+  view é nome + modo (`todas` = E, `qualquer` = OU entre regras) + regras
+  `{campo, operador: incluir|excluir, valores[]}`; o filtro roda no
+  cliente. **Editar** (set/2026): com uma view ativa, o chip tracejado
+  "editar" ao lado dela abre o `#view-modal` com as regras (clicar de novo
+  na badge ativa faz o mesmo). Abrir o editor **re-busca os projetos** —
+  a lista cacheada só renova no ↻, e um projeto criado no hub depois disso
+  não seria opção. Valor salvo que saiu da lista (projeto excluído, tag
+  renomeada) vira chip tracejado "não encontrado"/"fora da lista",
+  desmarcável. Regra "Projeto **incluir**" precisa de edição para cada
+  projeto novo; "Projeto **excluir**" pega os novos sozinha. O hub só
+  aplica as views (badges em Notas e no mini-kanban), sem editar.
 - **Kanban** (`.kanban-board`): **3 colunas fixas** — `Não Iniciado`,
   `Em Andamento`, `Feito` — nessa ordem, com fundo colorido por status
   (cinza/dourado/verde translúcido, mesmo mapeamento do mini-kanban do hub
@@ -1007,6 +1067,42 @@ lifeos_manifestacoes: id uuid, name text,
   ler o schema, checar o cover de amostras) — fica dormente também, mesma
   postura de `notion-movimentacoes` (rede de segurança, não apagada).
 
+### 6.5 Leitura de listas — no banco e paginada (out/2026)
+
+Vale para toda Edge Function e para o MCP. Antes, as leituras baixavam a
+tabela inteira e filtravam em memória, o que tinha dois tetos que falham
+**sem erro**:
+
+- **max-rows do PostgREST** (1000 no Supabase): a leitura única volta com as
+  primeiras 1000 linhas e parece completa. Com uma centena de movimentações
+  por mês, o `resumo_financeiro` perderia os meses mais recentes em menos de
+  um ano de uso.
+- **Tamanho da URL**: `lifeos-notas` e a `search_notas` montavam
+  `nota_id=in.(<id de todas as notas>)` para trazer os vínculos com projetos.
+  A URL crescia ~37 bytes por nota e passaria de 16 KB por volta de 430
+  notas, derrubando a tela de Notas, o hub e o MCP juntos.
+
+O padrão agora:
+
+- **Lista inteira** (o `query` das functions, o catálogo de projetos e o
+  índice da memória no MCP, o `resumo_financeiro`): `selectTodas()`, que
+  pagina com `limit`/`offset` e `Prefer: count=exact` até o `Content-Range`
+  fechar. Cópia em cada function que lista (§2), não import.
+- **Busca do MCP**: filtro, ordem e `limit` na própria query
+  (`selectPagina()`, que devolve também o total para `total_matches`). Nome
+  com `ilike` escapado, arrays com `ov`/`cs`, valores entre aspas.
+- **N:N**: os vínculos vêm por embed (`projs:lifeos_notas_projetos(projeto_id)`);
+  filtrar por projeto é um segundo embed `!inner` vazio, para não encolher a
+  lista de projetos da nota. Nunca `in.(...)` com ids de todas as linhas.
+- **Toda `order` termina em `id`**: importações em lote dividem o mesmo
+  `created_at` (a migração do Notion gravou centenas de linhas assim), e sem
+  desempate a ordem entre elas varia por chamada. Com `limit` ou paginação,
+  isso troca qual linha entra.
+
+Ficam de fora os catálogos de configuração (`lifeos_vocabularios`,
+`lifeos_recorrencias`, `lifeos_views`, `access_tokens`, `admin_config`),
+pequenos por natureza.
+
 ---
 
 ## 7. Ação de excluir (`confirmDelete`) — padrão repetido, não compartilhado
@@ -1135,6 +1231,7 @@ sofrem disso porque rodam o `closest` ANTES de trocar o conteúdo.
 | Notas | ✅ Funcional, página própria (CRUD completo) | `notas.html` | `lifeos_notas` + `lifeos_notas_projetos` | `lifeos-notas` |
 | Citações | ✅ Funcional, nativo do hub (banner sorteado + CRUD no modal — ver §3.6) | `lifeos.html` | `lifeos_citacoes` | `lifeos-citacoes` (+ `search_citacoes`/`create_citacao` no MCP) |
 | Memória | ✅ Funcional, página própria no drawer (CRUD completo — ver §17) | `memoria.html` | `lifeos_memorias` + `lifeos_memoria_registros` | `lifeos-memorias` (+ 6 tools e o índice nas `instructions` do MCP) |
+| Backup | ✅ Funcional, modal no hub (`#backup-btn` da topbar — ver §3.7) | `lifeos.html` | lê todas (RPC `lifeos_backup_dump`) | `lifeos-backup` |
 
 Ver [`FINANCAS.md`](FINANCAS.md) pra tudo sobre o módulo Finanças (contrato
 da API, regras de negócio, segurança) e [`NOTAS.md`](NOTAS.md) pra tudo
@@ -1631,7 +1728,7 @@ O que muda, via `assets/js/blog.js`:
 | Onde | Efeito |
 |---|---|
 | Menu do hub | "Publicar página" some |
-| Topbar do LifeOS | o link "← arquivo" some |
+| Topbar do LifeOS | o link "← arquivo" do hub some (só ele: o seletor é `.topbar .back[href="../index.html"]` — o "← lifeos" das telas do menu continua). As ações do hub ficam à direita por `margin-left: auto` em `.topbar-actions` |
 | `senhas.html` | a seção de escopo por página some de cada card |
 | `index.html` e `galeria.html` | redirecionam para `lifeos/lifeos.html` |
 | Rodapé da capa | o link da galeria some |
@@ -1799,7 +1896,8 @@ explica o que ele *é*, pra quem está de fora.
 - **Script inline mínimo** (`blog.js` + inicialização do Mermaid), sem
   `assets/js/` próprio — como o tutorial, é uma página de texto, não um módulo.
 - **Blog desligado:** os dois links pro arquivo (topbar e fecho) somem via
-  `blog.js` (`.topbar .back` e `[data-requer-blog]`).
+  `blog.js` (`.topbar .back[href="../index.html"]` e `[data-requer-blog]`);
+  a etiqueta "apresentação" tem `margin-left: auto` pra continuar à direita.
 - **Sem link pro GitHub:** a página descreve o sistema, não um endereço; o
   texto diz que o projeto foi *preparado* pra ser instanciado (migrations,
   seed, config, MIT). Um fork que queira apontar pro próprio repositório
